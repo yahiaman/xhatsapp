@@ -1,0 +1,11 @@
+[Unit]
+Description=Contrôle Xhatsapp toutes les cinq minutes
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+AccuracySec=30s
+Unit=xhatsapp-health.service
+
+[Install]
+WantedBy=timers.target

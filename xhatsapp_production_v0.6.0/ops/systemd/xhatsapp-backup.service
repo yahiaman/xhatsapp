@@ -1,0 +1,19 @@
+[Unit]
+Description=Sauvegarde vérifiée Xhatsapp
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/xhatsapp/scripts/backup-xhatsapp.sh
+User=root
+Group=root
+UMask=0077
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/backups/xhatsapp /run/lock

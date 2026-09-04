@@ -1,0 +1,47 @@
+﻿# Fichiers d'environnement et secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Clés et certificats
+*.pem
+*.key
+*.crt
+*.csr
+*.id_rsa
+*id_ed25519*
+
+# Dépendances Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Fichiers temporaires et de build
+tmp/
+temp/
+dist/
+build/
+*.log
+
+# Données persistantes locales / montages Docker
+*.sqlite
+*.sqlite3
+postgres_data/
+redis_data/
+openwa_data/
+omniroute_data/
+caddy_data/
+caddy_config/
+
+# Systèmes d'exploitation et IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp

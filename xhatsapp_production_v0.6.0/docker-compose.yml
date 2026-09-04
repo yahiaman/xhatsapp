@@ -1,0 +1,346 @@
+services:
+  postgres:
+    image: ${POSTGRES_IMAGE}
+    container_name: xhatsapp-postgres
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      OPENWA_DATABASE_NAME: ${OPENWA_DATABASE_NAME}
+      OPENWA_DATABASE_USERNAME: ${OPENWA_DATABASE_USERNAME}
+      OPENWA_DB_PASSWORD: ${OPENWA_DB_PASSWORD}
+      XHATSAPP_DATABASE_NAME: ${XHATSAPP_DATABASE_NAME}
+      XHATSAPP_DATABASE_USERNAME: ${XHATSAPP_DATABASE_USERNAME}
+      XHATSAPP_DB_PASSWORD: ${XHATSAPP_DB_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./config/postgres-init.sh:/docker-entrypoint-initdb.d/01-create-databases.sh:ro
+    networks:
+      - backend
+    mem_limit: 1g
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  redis:
+    image: ${REDIS_IMAGE}
+    container_name: xhatsapp-redis
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
+    volumes:
+      - redis_data:/data
+    networks:
+      - backend
+    mem_limit: 512m
+    pids_limit: 128
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  openwa:
+    image: ${OPENWA_IMAGE}
+    container_name: xhatsapp-openwa
+    restart: unless-stopped
+    stop_grace_period: 45s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ}
+      HOME: /tmp
+      XDG_CONFIG_HOME: /tmp/.config
+      XDG_CACHE_HOME: /tmp/.cache
+      PORT: "2785"
+      LOG_LEVEL: info
+      LOG_FORMAT: json
+      BASE_URL: https://${DOMAIN}
+      DASHBOARD_URL: https://${DOMAIN}
+      CORS_ORIGINS: https://${DOMAIN}
+      DATABASE_TYPE: postgres
+      DATABASE_HOST: postgres
+      DATABASE_PORT: "5432"
+      DATABASE_NAME: ${OPENWA_DATABASE_NAME}
+      DATABASE_USERNAME: ${OPENWA_DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${OPENWA_DB_PASSWORD}
+      DATABASE_SYNCHRONIZE: "false"
+      MAIN_DATABASE_SYNCHRONIZE: "true"
+      DATABASE_SSL: "false"
+      REDIS_ENABLED: "true"
+      QUEUE_ENABLED: "true"
+      CACHE_ENABLED: "true"
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      ENGINE_TYPE: ${OPENWA_ENGINE_TYPE}
+      PUPPETEER_EXECUTABLE_PATH: /usr/local/bin/puppeteer-chrome
+      AUTO_START_SESSIONS: "true"
+      NODE_ID: openwa-primary
+      API_MASTER_KEY: ${OPENWA_API_MASTER_KEY}
+      API_KEY_PEPPER: ${OPENWA_API_KEY_PEPPER}
+      SERVE_DASHBOARD: "true"
+      ENABLE_SWAGGER: "false"
+      RESOLVE_LID_TO_PHONE: "true"
+      WEBHOOK_SSRF_PROTECT: "true"
+      WEBHOOK_CONTACT_DETAILS: "false"
+      WEBHOOK_TIMEOUT: "10000"
+      WEBHOOK_RETRY_DELAY: "5000"
+      AUDIT_RETENTION_DAYS: "90"
+      WEBHOOK_FAILURE_RETENTION_DAYS: "90"
+      MEDIA_DOWNLOAD_MAX_BYTES: "26214400"
+      INBOUND_MEDIA_CONCURRENCY: "2"
+      CHAT_MEDIA_ARCHIVE_ENABLED: "false"
+      STORE_EPHEMERAL_MESSAGES: "false"
+    volumes:
+      - openwa_data:/app/data
+    ports:
+      - 127.0.0.1:2785:2785
+    expose:
+      - "2785"
+    networks:
+      - backend
+      - edge
+    mem_limit: 4g
+    pids_limit: 2048
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - require('http').get('http://localhost:2785/api/health/ready',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+  webhook:
+    image: xhatsapp-webhook:0.6.0
+    build:
+      context: ./webhook
+      args:
+        NODE_IMAGE: ${WEBHOOK_NODE_IMAGE}
+    container_name: xhatsapp-webhook
+    restart: unless-stopped
+    stop_grace_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    group_add:
+      - "${XHATSAPP_GROUP_GID:-987}"
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      DATABASE_URL: postgresql://${XHATSAPP_DATABASE_USERNAME}:${XHATSAPP_DB_PASSWORD}@postgres:5432/${XHATSAPP_DATABASE_NAME}
+      OPENWA_WEBHOOK_SECRET: ${OPENWA_WEBHOOK_SECRET}
+      OPENWA_API_URL: http://openwa:2785
+      OPENWA_SESSION_ID: ${OPENWA_SESSION_ID}
+      XHATSAPP_OPENWA_API_KEY: ${XHATSAPP_OPENWA_API_KEY}
+      BROADCAST_SEND_DELAY_MS: ${BROADCAST_SEND_DELAY_MS:-750}
+      XHATSAPP_ADMIN_TOKEN: ${XHATSAPP_ADMIN_TOKEN}
+      XHATSAPP_GROUP_INVENTORY: /config/openwa-groups.json
+      SUMMARY_PROVIDER: ${SUMMARY_PROVIDER:-omniroute}
+      SUMMARY_API_URL: ${SUMMARY_API_URL:-http://omniroute:20128/v1}
+      SUMMARY_API_KEY: ${SUMMARY_API_KEY}
+      SUMMARY_MODEL: ${SUMMARY_MODEL}
+    volumes:
+      - ./config/openwa-groups.json:/config/openwa-groups.json:ro
+    ports:
+      - 127.0.0.1:3000:3000
+    expose:
+      - "3000"
+    networks:
+      - backend
+      - edge
+    mem_limit: 384m
+    pids_limit: 128
+    depends_on:
+      postgres:
+        condition: service_healthy
+      openwa:
+        condition: service_healthy
+      omniroute:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://localhost:3000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  omniroute:
+    image: ${OMNIROUTE_IMAGE}
+    container_name: xhatsapp-omniroute
+    restart: unless-stopped
+    stop_grace_period: 40s
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      NODE_ENV: production
+      PORT: "20128"
+      HOSTNAME: 0.0.0.0
+      DATA_DIR: /app/data
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379
+      INITIAL_PASSWORD: ${OMNIROUTE_INITIAL_PASSWORD}
+      OMNIROUTE_WS_BRIDGE_SECRET: ${OMNIROUTE_WS_BRIDGE_SECRET}
+      OMNIROUTE_MEMORY_MB: "768"
+      REQUIRE_API_KEY: "true"
+      DISABLE_SQLITE_AUTO_BACKUP: "true"
+    volumes:
+      - omniroute_data:/app/data
+    ports:
+      - 127.0.0.1:20128:20128
+    expose:
+      - "20128"
+    networks:
+      - backend
+      - egress
+    mem_limit: 1g
+    pids_limit: 256
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://localhost:20128/api/monitoring/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 60s
+
+  ollama:
+    image: ${OLLAMA_IMAGE}
+    profiles: ["local-llm"]
+    container_name: xhatsapp-ollama
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_CONTEXT_LENGTH: "8192"
+      OLLAMA_KEEP_ALIVE: "0"
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_NUM_PARALLEL: "1"
+    volumes:
+      - ollama_data:/root/.ollama
+    expose:
+      - "11434"
+    networks:
+      - backend
+      - egress
+    mem_limit: 10g
+    cpus: 3.0
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+      start_period: 30s
+
+  caddy:
+    image: ${CADDY_IMAGE}
+    container_name: xhatsapp-caddy
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    mem_limit: 256m
+    pids_limit: 128
+    depends_on:
+      openwa:
+        condition: service_healthy
+
+networks:
+  backend:
+    name: xhatsapp-backend
+    internal: true
+
+  edge:
+    name: xhatsapp-edge
+
+  egress:
+    name: xhatsapp-egress
+
+volumes:
+  postgres_data:
+    name: xhatsapp-postgres-data
+
+  redis_data:
+    name: xhatsapp-redis-data
+
+  openwa_data:
+    name: xhatsapp-openwa-data
+
+  caddy_data:
+    name: xhatsapp-caddy-data
+
+  caddy_config:
+    name: xhatsapp-caddy-config
+
+  ollama_data:
+    name: xhatsapp-ollama-data
+
+  omniroute_data:
+    name: xhatsapp-omniroute-data

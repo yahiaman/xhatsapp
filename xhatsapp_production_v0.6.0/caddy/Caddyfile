@@ -1,0 +1,35 @@
+{$DOMAIN} {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
+
+	@openwa_health path /api/health/ready
+	handle @openwa_health {
+		reverse_proxy openwa:2785
+	}
+
+	@openwa_webhook {
+		path /webhook/openwa
+		method POST
+	}
+	handle @openwa_webhook {
+		reverse_proxy webhook:3000
+	}
+
+	handle {
+		respond "Not Found" 404
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
+

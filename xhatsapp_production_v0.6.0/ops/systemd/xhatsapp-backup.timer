@@ -1,0 +1,11 @@
+[Unit]
+Description=Sauvegarde quotidienne Xhatsapp
+
+[Timer]
+OnCalendar=*-*-* 03:15:00
+Persistent=true
+RandomizedDelaySec=15m
+Unit=xhatsapp-backup.service
+
+[Install]
+WantedBy=timers.target
