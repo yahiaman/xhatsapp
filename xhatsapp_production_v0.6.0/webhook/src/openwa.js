@@ -8,7 +8,7 @@ export class OpenWaApiError extends Error {
   }
 }
 
-export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 10_000 }) {
+export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_000 }) {
   if (!baseUrl || !sessionId || !apiKey) {
     throw new Error('OpenWA client configuration is incomplete');
   }
