@@ -752,6 +752,34 @@ export async function listRecapSourceGroups(localDate, timezone) {
   return result.rows;
 }
 
+export async function listRecapTargetGroups() {
+  const result = await pool.query(
+    `SELECT g.id, g.chat_id, COALESCE(g.name, '(sans nom)') AS name,
+            COALESCE(g.inventory_ref, left(encode(digest(g.chat_id, 'sha256'), 'hex'), 12)) AS reference
+     FROM whatsapp_groups g
+     WHERE g.enabled = true AND g.is_admin = false AND g.allow_recap = true
+     ORDER BY lower(COALESCE(g.name, '')), g.inventory_ref`,
+  );
+  return result.rows;
+}
+
+export async function listConsolidatedRecapMessages(localDate, timezone) {
+  const result = await pool.query(
+    `SELECT to_char(m.received_at AT TIME ZONE $2, 'HH24:MI') AS time,
+            COALESCE(g.name, '(sans nom)') AS group_name,
+            m.body
+     FROM messages m
+     JOIN whatsapp_groups g ON g.chat_id = m.chat_id
+     WHERE g.enabled = true AND g.is_admin = false AND g.allow_recap = true
+       AND m.is_group = true AND m.from_me = false
+       AND m.body IS NOT NULL AND btrim(m.body) <> ''
+       AND (m.received_at AT TIME ZONE $2)::date = $1::date
+     ORDER BY m.received_at ASC`,
+    [localDate, timezone],
+  );
+  return result.rows;
+}
+
 export async function finishRecapGeneration({ draftId, deliveries }) {
   const client = await pool.connect();
   try {

@@ -42,6 +42,8 @@ import {
   getRecapSettings,
   listRecapDrafts,
   listRecapSourceGroups,
+  listRecapTargetGroups,
+  listConsolidatedRecapMessages,
   listResumableRecapIds,
   markRecapDeliveryFailed,
   markRecapDeliverySending,
@@ -75,6 +77,7 @@ import {
   createRecapCode,
   parseRecapCommand,
   recapIsDue,
+  summarizeConsolidated,
   summarizeGroup,
 } from './recap.js';
 
@@ -433,32 +436,42 @@ async function generateDailyRecap(localDate, settings) {
   const draft = await claimNewDailyRecap(localDate);
   if (!draft) return;
   try {
-    const groups = await listRecapSourceGroups(localDate, settings.timezone);
-    const deliveries = [];
-    for (const group of groups) {
-      const summary = await summarizeGroup({
-        summaryClient, groupName: group.name, localDate, messages: group.messages,
-      });
-      deliveries.push({
-        groupId: group.id, name: group.name, reference: group.reference,
-        messageCount: group.messages.length,
-        body: appendSignature(summary, settings.signature),
-      });
-    }
-    await finishRecapGeneration({ draftId: draft.id, deliveries });
-    if (!deliveries.length) {
-      console.log('Daily recap empty', { local_date: localDate });
+    const targetGroups = await listRecapTargetGroups();
+    if (!targetGroups.length) {
+      await finishRecapGeneration({ draftId: draft.id, deliveries: [] });
+      console.log('Daily recap skipped: no target groups configured', { local_date: localDate });
       return;
     }
+    const messages = await listConsolidatedRecapMessages(localDate, settings.timezone);
+    if (!messages.length) {
+      await finishRecapGeneration({ draftId: draft.id, deliveries: [] });
+      console.log('Daily recap empty: no messages exchanged today', { local_date: localDate });
+      return;
+    }
+
+    const summary = await summarizeConsolidated({
+      summaryClient, localDate, messages,
+    });
+    const finalBody = appendSignature(summary, settings.signature);
+
+    const deliveries = targetGroups.map((group) => ({
+      groupId: group.id,
+      name: group.name,
+      reference: group.reference,
+      messageCount: messages.length,
+      body: finalBody,
+    }));
+
+    await finishRecapGeneration({ draftId: draft.id, deliveries });
+
     const admin = await getAdminTarget();
-    const preview = await getRecapPreview(draft.id);
-    await openWa.sendText(admin.chat_id, buildRecapPreview(preview));
-    for (const delivery of preview.deliveries) {
-      await openWa.sendText(admin.chat_id, `Aperçu pour ${delivery.name} (${delivery.reference}) :`);
-      await openWa.sendText(admin.chat_id, delivery.body);
+    if (admin) {
+      const preview = await getRecapPreview(draft.id);
+      await openWa.sendText(admin.chat_id, buildRecapPreview(preview));
+      await openWa.sendText(admin.chat_id, `📝 *Aperçu du récapitulatif commun :*\n\n${finalBody}`);
     }
     console.log('Daily recap draft ready', {
-      code: draft.code, local_date: localDate, destinations: deliveries.length,
+      code: draft.code, local_date: localDate, destinations: deliveries.length, messages: messages.length,
     });
   } catch (error) {
     const safeError = safeOperationalError(error);
