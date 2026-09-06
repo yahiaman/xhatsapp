@@ -2,12 +2,16 @@ import { randomBytes } from 'node:crypto';
 
 const RULES = {
   agency: [
-    'agence', 'agency', 'provider', 'prestataire',
+    'agence', 'agency',
     'وكالة', 'وكاله', 'شركة', 'شركه',
   ],
   donation: [
     'don', 'dons', 'donation', 'cagnotte', 'collecte',
-    'sadaqa', 'sadaka', 'zakat', 'تبرع', 'تبرعات', 'صدقة', 'صدقه', 'زكاة',
+    'sadaqa', 'sadaka', 'sadaqah', 'zakat', 'aumone', 'aumône',
+    'leetchi', 'cotizup', 'gofundme', 'paypal', 'lydia',
+    'rib', 'iban', 'virement', 'western union', 'moneygram',
+    'fidya', 'kaffara',
+    'تبرع', 'تبرعات', 'صدقة', 'صدقه', 'زكاة',
   ],
   advertising: [
     'offre', 'promotion', 'promo', 'prix', 'tarif', 'reservation',
@@ -16,6 +20,39 @@ const RULES = {
     'عرض', 'سعر', 'متوفر', 'متاح', 'حجز', 'فندق', 'غرفة', 'ريال',
   ],
 };
+
+export const DEFAULT_FORBIDDEN_AGENCIES = [
+  'ACMUV', 'Al Amana', 'Al Bouraq', 'Al Fadjri', 'Al Minbar', 'Al Mourafiq', 'Al Qafila',
+  'Al Raad Tour', 'Al Sirate Voyages', 'Al Wafa', 'Arafat Voyages', 'Ariane Voyages',
+  'Asfar Travel France', 'Assafar Voyages', 'Association Nour', 'Autre Voyage',
+  'Autre Voyage Falah Darain', 'Azmi', 'Bel Agir', 'Booking Makkah', 'Carnot Voyages',
+  'Chayma Travel', 'Fatima', 'CIDRA', 'Classy Travel', 'Dar Hajj', 'DGP', 'Djamila Voyage',
+  'El Hayat', 'El Rajhi', 'Essakina Voyage', 'Favela', 'Go Makkah', 'Groupe Al Quds',
+  'Hajj Oumra TV', 'Haramain Voyages', 'Haramein Voyages', 'Haramayn Voyages',
+  'Hawwa Travel', 'Hedjaz', 'Hégire Voyage', 'Hikma Travel', 'Histoires Saintes',
+  'Ibtisama', 'Ibtisama Travel', 'Jawaz', 'Jil Voyages', 'Kawtar Voyages', 'Labayk',
+  'Labayk Travel', 'Maison du Hajj', 'Maison Blanche', 'Mawasem', 'Mon Hajj',
+  'Mon Guide Hajj', 'Nabi Voyages', 'Nawassik', 'Noor Travel', 'Nouvelles Frontières',
+  'Nouveau Regard', 'Oia Voyages', 'Omra Privée', 'Palma', 'Prisme Travel', 'Rissala',
+  'Safra Travel', 'Salsabil Travel', 'Selectour', 'Sirat Travel', 'Soussi Travel',
+  'Tahafut', 'Tawhid Travel', 'Tawva Voyages', 'Transalp', 'Traveler Spirit',
+  'Trip In Makkah', 'Umrah and Hajj Tour', 'Voie Directe', 'Voyage De Rêve',
+  'Voyages Essalam', 'Voyages MN', 'France Nusuk',
+];
+
+const HUMANITARIAN_PHRASES = [
+  'aider les pauvres', 'aide aux pauvres', 'aider des pauvres', 'pour les pauvres',
+  'nourrir les pauvres', 'repas pour les pauvres', 'nourrir des pauvres',
+  'aider les orphelins', 'aide aux orphelins', 'parrainer un orphelin', 'parrainage orphelin',
+  'creuser un puits', 'construire un puits', 'forage de puits', 'projet puits',
+  'colis alimentaire', 'colis alimentaires', 'panier alimentaire',
+  'sadaka jariya', 'sadaqa jariya', 'sadaka djariya',
+  'aide humanitaire', 'urgence humanitaire', 'appel aux dons', 'faire un don',
+  'appel au don', 'collecte de dons', 'envoyez vos dons',
+];
+
+const AID_WORDS = ['aider', 'aide', 'soutenir', 'soutien', 'don', 'dons', 'donner', 'collecte', 'urgence', 'pauvres', 'orphelins', 'famine', 'necessiteux'];
+const SENSITIVE_ZONES = ['somali', 'somalie', 'gaza', 'palestine', 'yemen', 'soudan', 'syrie', 'rohingya', 'afrique'];
 
 const LATIN_TERM = /^[a-z0-9 ]+$/;
 
@@ -41,6 +78,20 @@ function matches(text, terms) {
   return terms.filter((term) => containsTerm(text, term));
 }
 
+function hasHumanitarianAppeal(text) {
+  if (HUMANITARIAN_PHRASES.some((phrase) => text.includes(phrase))) return true;
+  const hasAid = AID_WORDS.some((word) => containsTerm(text, word));
+  const hasZone = SENSITIVE_ZONES.some((zone) => containsTerm(text, zone));
+  return hasAid && hasZone;
+}
+
+function isExemptAgency(text, term) {
+  if (term === 'agence' && (text.includes('sans agence') || text.includes('sans-agence'))) {
+    return true;
+  }
+  return false;
+}
+
 function hasContactOrPriceSignal(original, normalized) {
   return /https?:\/\/|www\.|wa\.me\//i.test(original)
     || /(?:\+?\d[\s().-]*){8,}/.test(original)
@@ -48,17 +99,42 @@ function hasContactOrPriceSignal(original, normalized) {
     || /\b\d{2,5}(?:[.,]\d{1,2})?\b/.test(normalized);
 }
 
-export function detectModeration(value) {
+export function detectModeration(value, customAgencies = []) {
   const original = String(value || '');
   const text = normalizeForModeration(original);
-  if (!text) return { flagged: false, categories: [], matchedTerms: [] };
+  if (!text) return { flagged: false, categories: [], matchedTerms: [], isForbiddenAgency: false, matchedAgencies: [] };
 
-  const agency = matches(text, RULES.agency);
+  const allAgencies = [...new Set([...DEFAULT_FORBIDDEN_AGENCIES, ...customAgencies])];
+  const matchedAgencies = [];
+  for (const agency of allAgencies) {
+    const normalized = normalizeForModeration(agency);
+    if (!normalized) continue;
+    if (normalized === 'nusuk' || normalized === 'entraide nusuk hajj' || normalized === 'sans agence' || normalized === 'ithraa al khair') continue;
+    if (containsTerm(text, normalized)) {
+      matchedAgencies.push(agency);
+    }
+  }
+
+  const isForbiddenAgency = matchedAgencies.length > 0;
+  let agency = matches(text, RULES.agency).filter((term) => !isExemptAgency(text, term));
+  if (matchedAgencies.length) {
+    agency = [...new Set([...agency, ...matchedAgencies.map((a) => a.toLowerCase())])];
+  }
+
   const donation = matches(text, RULES.donation);
+  if (hasHumanitarianAppeal(text)) {
+    donation.push('appel_humanitaire');
+  }
+
   const advertising = matches(text, RULES.advertising);
   const categories = [];
 
-  if (agency.length) categories.push('agency');
+  if (isForbiddenAgency) {
+    categories.push('agency_citation');
+  } else if (agency.length) {
+    categories.push('agency');
+  }
+
   if (donation.length) categories.push('donation');
   if (advertising.length >= 2
       || (advertising.length >= 1 && hasContactOrPriceSignal(original, text))) {
@@ -69,6 +145,9 @@ export function detectModeration(value) {
     flagged: categories.length > 0,
     categories,
     matchedTerms: [...new Set([...agency, ...donation, ...advertising])],
+    isForbiddenAgency,
+    matchedAgencies,
+    matchedAgency: matchedAgencies[0] || null,
   };
 }
 
@@ -88,13 +167,37 @@ export function parseModerationCommand(value) {
   };
 }
 
-export function buildModerationAlert({ code, categories, groupName, groupReference, senderName, text }) {
+export function buildModerationAlert({
+  code, categories, groupName, groupReference, senderName, text, autoDeleted = false, matchedAgencies = [],
+}) {
   const labels = {
     agency: 'agence ou prestataire',
-    donation: 'don ou collecte',
+    agency_citation: 'citation d’agence interdite',
+    donation: 'don, cagnotte ou appel aux dons',
     advertising: 'publicité ou offre commerciale',
   };
   const excerpt = String(text || '(message sans texte)').slice(0, 1200);
+
+  if (autoDeleted) {
+    const agencyLabel = matchedAgencies.length
+      ? `Agence(s) détectée(s) : ${matchedAgencies.join(', ')}`
+      : 'Agence détectée';
+    return [
+      '🛡️ Modération automatique Xhatsapp',
+      '',
+      `Motif : ${categories.map((category) => labels[category] || category).join(', ')}`,
+      agencyLabel,
+      `Groupe : ${groupName || '(sans nom)'} (${groupReference})`,
+      `Auteur : ${senderName || 'Membre non identifié'}`,
+      '',
+      'Message supprimé :',
+      excerpt,
+      '',
+      '✅ Action effectuée :',
+      'Le message a été supprimé automatiquement et un rappel de neutralité a été envoyé dans le groupe.',
+    ].join('\n');
+  }
+
   return [
     '🚨 Alerte de modération Xhatsapp',
     '',

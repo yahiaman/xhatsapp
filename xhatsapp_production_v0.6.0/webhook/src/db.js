@@ -218,24 +218,24 @@ export async function storeMessage(message, delivery) {
   }
 }
 
-export async function createModerationAlert({ messageInternalId, sourceGroupId, detection, code }) {
+export async function createModerationAlert({ messageInternalId, sourceGroupId, detection, code, status = 'pending' }) {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const result = await client.query(
       `INSERT INTO moderation_alerts (
-         code, message_id, source_group_id, categories, matched_terms
-       ) VALUES ($1, $2, $3, $4, $5)
+         code, message_id, source_group_id, categories, matched_terms, status, decided_at
+       ) VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $6 = 'auto_deleted' THEN now() ELSE NULL END)
        ON CONFLICT (message_id) DO NOTHING
        RETURNING id, code, categories, status`,
-      [code, messageInternalId, sourceGroupId, detection.categories, detection.matchedTerms],
+      [code, messageInternalId, sourceGroupId, detection.categories, detection.matchedTerms, status],
     );
     if (result.rowCount === 1) {
       await client.query(
         `UPDATE messages
-         SET processing_status = 'flagged', processed_at = now()
+         SET processing_status = CASE WHEN $2 = 'auto_deleted' THEN 'auto_deleted' ELSE 'flagged' END, processed_at = now()
          WHERE id = $1`,
-        [messageInternalId],
+        [messageInternalId, status],
       );
     }
     await client.query('COMMIT');
@@ -246,6 +246,34 @@ export async function createModerationAlert({ messageInternalId, sourceGroupId, 
   } finally {
     client.release();
   }
+}
+
+export async function listForbiddenAgencies() {
+  const result = await pool.query(
+    `SELECT id, name, normalized_name, created_at
+     FROM forbidden_agencies
+     ORDER BY lower(name) ASC`,
+  );
+  return result.rows;
+}
+
+export async function addForbiddenAgency(name, normalizedName) {
+  const result = await pool.query(
+    `INSERT INTO forbidden_agencies (name, normalized_name)
+     VALUES ($1, $2)
+     ON CONFLICT (normalized_name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id, name, normalized_name, created_at`,
+    [name, normalizedName],
+  );
+  return result.rows[0];
+}
+
+export async function deleteForbiddenAgency(id) {
+  const result = await pool.query(
+    `DELETE FROM forbidden_agencies WHERE id = $1 RETURNING id, name`,
+    [id],
+  );
+  return result.rows[0] || null;
 }
 
 export async function markModerationAlertNotified(alertId, adminMessageId) {

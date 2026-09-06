@@ -1,15 +1,18 @@
 import express from 'express';
 import {
+  addForbiddenAgency,
   checkDatabase,
   cancelBroadcastDraft,
   claimBroadcastDraft,
   createBroadcastDraft,
   createModerationAlert,
+  deleteForbiddenAgency,
   finalizeBroadcastDraft,
   getBroadcastExecution,
   getAdminTarget,
   getGroupPolicy,
   getPendingModerationAlert,
+  listForbiddenAgencies,
   listGroupPolicies,
   listBroadcastDrafts,
   listModerationAlerts,
@@ -53,7 +56,7 @@ import {
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
 import { verifyOpenWaSignature } from './security.js';
-import { adminAuth, adminHtml, parsePolicy, readGroupInventory } from './admin.js';
+import { adminAuth, adminHtml, parseAgency, parsePolicy, readGroupInventory } from './admin.js';
 import {
   buildModerationAlert,
   createAlertCode,
@@ -127,7 +130,21 @@ function safeOperationalError(error) {
   return error instanceof Error ? error.name : 'unknown_error';
 }
 
-async function newModerationAlert(messageInternalId, sourceGroupId, detection) {
+let forbiddenAgenciesCache = [];
+
+async function reloadForbiddenAgencies() {
+  try {
+    const agencies = await listForbiddenAgencies();
+    forbiddenAgenciesCache = agencies.map((agency) => agency.name);
+    console.log('Forbidden agencies cache reloaded', { count: forbiddenAgenciesCache.length });
+  } catch (error) {
+    console.warn('Forbidden agencies cache reload failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
+async function newModerationAlert(messageInternalId, sourceGroupId, detection, status = 'pending') {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       return await createModerationAlert({
@@ -135,6 +152,7 @@ async function newModerationAlert(messageInternalId, sourceGroupId, detection) {
         sourceGroupId,
         detection,
         code: createAlertCode(),
+        status,
       });
     } catch (error) {
       if (error?.code !== '23505') throw error;
@@ -143,8 +161,9 @@ async function newModerationAlert(messageInternalId, sourceGroupId, detection) {
   throw new Error('moderation_code_generation_failed');
 }
 
-async function notifyModerators(message, groupPolicy, messageInternalId, detection) {
-  const alert = await newModerationAlert(messageInternalId, groupPolicy.id, detection);
+async function notifyModerators(message, groupPolicy, messageInternalId, detection, autoDeleted = false) {
+  const status = autoDeleted ? 'auto_deleted' : 'pending';
+  const alert = await newModerationAlert(messageInternalId, groupPolicy.id, detection, status);
   if (!alert) return null;
   try {
     const admin = await getAdminTarget();
@@ -155,6 +174,7 @@ async function notifyModerators(message, groupPolicy, messageInternalId, detecti
       groupReference: groupPolicy.inventory_ref || safeReference(message.chatId),
       senderName: message.senderName,
       text: message.text,
+      autoDeleted,
     });
     const sent = await openWa.sendText(admin.chat_id, text);
     await markModerationAlertNotified(alert.id, responseMessageId(sent));
@@ -163,6 +183,7 @@ async function notifyModerators(message, groupPolicy, messageInternalId, detecti
       source_group_ref: groupPolicy.inventory_ref || safeReference(message.chatId),
       admin_group_ref: admin.inventory_ref || safeReference(admin.chat_id),
       categories: alert.categories,
+      auto_deleted: autoDeleted,
     });
   } catch (error) {
     const safeError = safeOperationalError(error);
@@ -588,9 +609,32 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
         status = draftResult.handled ? 'broadcast_pending' : draftResult.reason;
       }
     } else if (result.inserted && !message.fromMe && groupPolicy.is_monitored) {
-      const detection = detectModeration(message.text);
-      if (detection.flagged) {
-        const alert = await notifyModerators(message, groupPolicy, result.internalId, detection);
+      const detection = detectModeration(message.text, forbiddenAgenciesCache);
+      if (detection.isForbiddenAgency) {
+        try {
+          await openWa.deleteMessage(message.chatId, message.messageId);
+        } catch (error) {
+          console.error('Failed to auto-delete forbidden agency message', {
+            chat_ref: safeReference(message.chatId),
+            message_ref: safeReference(message.messageId),
+            error: safeOperationalError(error),
+          });
+        }
+        try {
+          await openWa.sendText(
+            message.chatId,
+            "⚠️ Pas de citation de nom d'agence dans notre groupe car nous sommes neutres à ce sujet. Merci pour votre compréhension.",
+          );
+        } catch (error) {
+          console.error('Failed to send neutrality warning', {
+            chat_ref: safeReference(message.chatId),
+            error: safeOperationalError(error),
+          });
+        }
+        const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, true);
+        status = alert ? 'agency_auto_deleted' : status;
+      } else if (detection.flagged) {
+        const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false);
         status = alert ? 'flagged' : status;
       }
     }
@@ -628,6 +672,47 @@ app.get('/admin/api/moderation', async (request, response) => {
     response.json({ ok: true, alerts: await listModerationAlerts(request.query.limit) });
   } catch {
     response.status(500).json({ ok: false, error: 'moderation_list_failed' });
+  }
+});
+
+app.get('/admin/api/agencies', async (_request, response) => {
+  try {
+    response.json({ ok: true, agencies: await listForbiddenAgencies() });
+  } catch {
+    response.status(500).json({ ok: false, error: 'agencies_list_failed' });
+  }
+});
+
+app.post('/admin/api/agencies', async (request, response) => {
+  const parsed = parseAgency(request.body);
+  if (!parsed) {
+    response.status(400).json({ ok: false, error: 'invalid_agency' });
+    return;
+  }
+  try {
+    const agency = await addForbiddenAgency(parsed.name);
+    await reloadForbiddenAgencies();
+    response.json({ ok: true, agency });
+  } catch (error) {
+    if (error?.code === '23505') {
+      response.status(409).json({ ok: false, error: 'agency_already_exists' });
+      return;
+    }
+    response.status(500).json({ ok: false, error: 'agency_add_failed' });
+  }
+});
+
+app.delete('/admin/api/agencies/:id', async (request, response) => {
+  try {
+    const deleted = await deleteForbiddenAgency(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ ok: false, error: 'agency_not_found' });
+      return;
+    }
+    await reloadForbiddenAgencies();
+    response.json({ ok: true, deleted: true });
+  } catch {
+    response.status(500).json({ ok: false, error: 'agency_delete_failed' });
   }
 });
 
@@ -793,6 +878,14 @@ try {
   console.log('Group inventory synchronized', { imported: result.imported });
 } catch (error) {
   console.warn('Group inventory unavailable', {
+    error: error instanceof Error ? error.message : 'unknown_error',
+  });
+}
+
+try {
+  await reloadForbiddenAgencies();
+} catch (error) {
+  console.warn('Forbidden agencies initialization failed', {
     error: error instanceof Error ? error.message : 'unknown_error',
   });
 }
