@@ -1,4 +1,4 @@
-﻿CREATE TABLE IF NOT EXISTS moderation_keywords (
+CREATE TABLE IF NOT EXISTS moderation_keywords (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   category VARCHAR(32) NOT NULL CHECK (category IN ('donation', 'advertising')),
   term VARCHAR(150) NOT NULL,
