@@ -175,6 +175,7 @@ async function notifyModerators(message, groupPolicy, messageInternalId, detecti
       senderName: message.senderName,
       text: message.text,
       autoDeleted,
+      matchedAgencies: detection.matchedAgencies || [],
     });
     const sent = await openWa.sendText(admin.chat_id, text);
     await markModerationAlertNotified(alert.id, responseMessageId(sent));

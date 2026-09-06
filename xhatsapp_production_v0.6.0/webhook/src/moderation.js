@@ -176,41 +176,48 @@ export function buildModerationAlert({
     donation: 'don, cagnotte ou appel aux dons',
     advertising: 'publicité ou offre commerciale',
   };
-  const excerpt = String(text || '(message sans texte)').slice(0, 1200);
+  const excerpt = String(text || '(message sans texte)').slice(0, 1500);
 
   if (autoDeleted) {
     const agencyLabel = matchedAgencies.length
-      ? `Agence(s) détectée(s) : ${matchedAgencies.join(', ')}`
-      : 'Agence détectée';
+      ? `Agence(s) détectée(s) : *${matchedAgencies.join(', ')}*`
+      : 'Agence interdite détectée';
     return [
-      '🛡️ Modération automatique Xhatsapp',
+      '🛡️ *Modération automatique Xhatsapp*',
       '',
-      `Motif : ${categories.map((category) => labels[category] || category).join(', ')}`,
-      agencyLabel,
-      `Groupe : ${groupName || '(sans nom)'} (${groupReference})`,
-      `Auteur : ${senderName || 'Membre non identifié'}`,
+      `📋 *Motif :* ${categories.map((category) => labels[category] || category).join(', ')}`,
+      `🏢 *${agencyLabel}*`,
+      `👥 *Groupe :* ${groupName || '(sans nom)'} (${groupReference})`,
+      `👤 *Auteur :* ${senderName || 'Membre non identifié'}`,
       '',
-      'Message supprimé :',
+      '💬 *Contenu du message supprimé :*',
+      '----------------------------------------',
       excerpt,
+      '----------------------------------------',
       '',
-      '✅ Action effectuée :',
-      'Le message a été supprimé automatiquement et un rappel de neutralité a été envoyé dans le groupe.',
+      '✅ *Actions effectuées :*',
+      '• Message supprimé automatiquement dans le groupe.',
+      '• Rappel de neutralité envoyé aux participants.',
+      '',
+      'ℹ️ _Si c’est un faux positif, vous pouvez ajuster le dictionnaire sur l’interface /admin._',
     ].join('\n');
   }
 
   return [
-    '🚨 Alerte de modération Xhatsapp',
+    '🚨 *Alerte de modération Xhatsapp*',
     '',
-    `Référence : ${code}`,
-    `Motif : ${categories.map((category) => labels[category] || category).join(', ')}`,
-    `Groupe : ${groupName || '(sans nom)'} (${groupReference})`,
-    `Auteur : ${senderName || 'Membre non identifié'}`,
+    `🏷️ *Référence :* ${code}`,
+    `📋 *Motif :* ${categories.map((category) => labels[category] || category).join(', ')}`,
+    `👥 *Groupe :* ${groupName || '(sans nom)'} (${groupReference})`,
+    `👤 *Auteur :* ${senderName || 'Membre non identifié'}`,
     '',
-    'Message signalé :',
+    '💬 *Contenu du message signalé :*',
+    '----------------------------------------',
     excerpt,
+    '----------------------------------------',
     '',
-    'Décision humaine requise :',
-    `IGNORER ${code}`,
-    `SUPPRIMER ${code}`,
+    '⚠️ *Décision humaine requise :*',
+    `👉 Pour supprimer : *SUPPRIMER ${code}*`,
+    `👉 Pour conserver : *IGNORER ${code}*`,
   ].join('\n');
 }
