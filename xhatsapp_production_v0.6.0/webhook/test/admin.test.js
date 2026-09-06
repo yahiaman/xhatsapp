@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseAgency, parsePolicy, validAdminToken } from '../src/admin.js';
+import { parseAgency, parseKeyword, parsePolicy, validAdminToken } from '../src/admin.js';
 
 const completePolicy = {
   enabled: true,
@@ -36,4 +36,20 @@ test('parses and validates agency input', () => {
   assert.equal(parseAgency({}), null);
   assert.equal(parseAgency(null), null);
   assert.equal(parseAgency({ name: 'A'.repeat(151) }), null);
+});
+
+test('parses and validates keyword input', () => {
+  assert.deepEqual(parseKeyword({ category: 'donation', term: '  cagnotte-test  ' }), {
+    category: 'donation',
+    term: 'cagnotte-test',
+  });
+  assert.deepEqual(parseKeyword({ category: 'ADVERTISING', term: 'promo2026' }), {
+    category: 'advertising',
+    term: 'promo2026',
+  });
+  assert.equal(parseKeyword({ category: 'invalid', term: 'quelque chose' }), null);
+  assert.equal(parseKeyword({ category: 'donation', term: '' }), null);
+  assert.equal(parseKeyword({ category: 'donation', term: '   ' }), null);
+  assert.equal(parseKeyword({ category: 'donation', term: 'A'.repeat(151) }), null);
+  assert.equal(parseKeyword(null), null);
 });

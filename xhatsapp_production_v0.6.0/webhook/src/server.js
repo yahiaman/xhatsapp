@@ -1,12 +1,14 @@
 import express from 'express';
 import {
   addForbiddenAgency,
+  addModerationKeyword,
   checkDatabase,
   cancelBroadcastDraft,
   claimBroadcastDraft,
   createBroadcastDraft,
   createModerationAlert,
   deleteForbiddenAgency,
+  deleteModerationKeyword,
   finalizeBroadcastDraft,
   getBroadcastExecution,
   getAdminTarget,
@@ -16,6 +18,7 @@ import {
   listGroupPolicies,
   listBroadcastDrafts,
   listModerationAlerts,
+  listModerationKeywords,
   listGroupSchedules,
   listScheduleRuns,
   listResumableBroadcastIds,
@@ -56,7 +59,7 @@ import {
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
 import { verifyOpenWaSignature } from './security.js';
-import { adminAuth, adminHtml, parseAgency, parsePolicy, readGroupInventory } from './admin.js';
+import { adminAuth, adminHtml, parseAgency, parseKeyword, parsePolicy, readGroupInventory } from './admin.js';
 import {
   buildModerationAlert,
   createAlertCode,
@@ -139,6 +142,29 @@ async function reloadForbiddenAgencies() {
     console.log('Forbidden agencies cache reloaded', { count: forbiddenAgenciesCache.length });
   } catch (error) {
     console.warn('Forbidden agencies cache reload failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
+let moderationKeywordsCache = { donation: [], advertising: [] };
+
+async function reloadModerationKeywords() {
+  try {
+    const list = await listModerationKeywords();
+    const donation = [];
+    const advertising = [];
+    for (const item of list) {
+      if (item.category === 'donation') donation.push(item.term);
+      else if (item.category === 'advertising') advertising.push(item.term);
+    }
+    moderationKeywordsCache = { donation, advertising };
+    console.log('Moderation keywords cache reloaded', {
+      donation: donation.length,
+      advertising: advertising.length,
+    });
+  } catch (error) {
+    console.warn('Moderation keywords cache reload failed', {
       error: error instanceof Error ? error.message : 'unknown_error',
     });
   }
@@ -610,7 +636,7 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
         status = draftResult.handled ? 'broadcast_pending' : draftResult.reason;
       }
     } else if (result.inserted && !message.fromMe && groupPolicy.is_monitored) {
-      const detection = detectModeration(message.text, forbiddenAgenciesCache);
+      const detection = detectModeration(message.text, forbiddenAgenciesCache, moderationKeywordsCache);
       if (detection.isForbiddenAgency) {
         try {
           await openWa.deleteMessage(message.chatId, message.messageId);
@@ -714,6 +740,48 @@ app.delete('/admin/api/agencies/:id', async (request, response) => {
     response.json({ ok: true, deleted: true });
   } catch {
     response.status(500).json({ ok: false, error: 'agency_delete_failed' });
+  }
+});
+
+app.get('/admin/api/keywords', async (request, response) => {
+  try {
+    const category = typeof request.query?.category === 'string' ? request.query.category.trim() : null;
+    response.json({ ok: true, keywords: await listModerationKeywords(category) });
+  } catch {
+    response.status(500).json({ ok: false, error: 'keywords_list_failed' });
+  }
+});
+
+app.post('/admin/api/keywords', async (request, response) => {
+  const parsed = parseKeyword(request.body);
+  if (!parsed) {
+    response.status(400).json({ ok: false, error: 'invalid_keyword' });
+    return;
+  }
+  try {
+    const item = await addModerationKeyword(parsed.category, parsed.term);
+    await reloadModerationKeywords();
+    response.json({ ok: true, keyword: item });
+  } catch (error) {
+    if (error?.code === '23505') {
+      response.status(409).json({ ok: false, error: 'keyword_already_exists' });
+      return;
+    }
+    response.status(500).json({ ok: false, error: 'keyword_add_failed' });
+  }
+});
+
+app.delete('/admin/api/keywords/:id', async (request, response) => {
+  try {
+    const deleted = await deleteModerationKeyword(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ ok: false, error: 'keyword_not_found' });
+      return;
+    }
+    await reloadModerationKeywords();
+    response.json({ ok: true, deleted: true });
+  } catch {
+    response.status(500).json({ ok: false, error: 'keyword_delete_failed' });
   }
 });
 
@@ -887,6 +955,14 @@ try {
   await reloadForbiddenAgencies();
 } catch (error) {
   console.warn('Forbidden agencies initialization failed', {
+    error: error instanceof Error ? error.message : 'unknown_error',
+  });
+}
+
+try {
+  await reloadModerationKeywords();
+} catch (error) {
+  console.warn('Moderation keywords initialization failed', {
     error: error instanceof Error ? error.message : 'unknown_error',
   });
 }

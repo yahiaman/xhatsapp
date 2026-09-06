@@ -276,6 +276,34 @@ export async function deleteForbiddenAgency(id) {
   return result.rows[0] || null;
 }
 
+export async function listModerationKeywords(category) {
+  const query = category
+    ? 'SELECT id, category, term, created_at FROM moderation_keywords WHERE category = $1 ORDER BY lower(term) ASC'
+    : 'SELECT id, category, term, created_at FROM moderation_keywords ORDER BY category, lower(term) ASC';
+  const params = category ? [category] : [];
+  const result = await pool.query(query, params);
+  return result.rows;
+}
+
+export async function addModerationKeyword(category, term) {
+  const result = await pool.query(
+    `INSERT INTO moderation_keywords (category, term)
+     VALUES ($1, $2)
+     ON CONFLICT (category, term) DO UPDATE SET term = EXCLUDED.term
+     RETURNING id, category, term, created_at`,
+    [category, term],
+  );
+  return result.rows[0];
+}
+
+export async function deleteModerationKeyword(id) {
+  const result = await pool.query(
+    `DELETE FROM moderation_keywords WHERE id = $1 RETURNING id, category, term`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
 export async function markModerationAlertNotified(alertId, adminMessageId) {
   await pool.query(
     `UPDATE moderation_alerts

@@ -99,12 +99,12 @@ function hasContactOrPriceSignal(original, normalized) {
     || /\b\d{2,5}(?:[.,]\d{1,2})?\b/.test(normalized);
 }
 
-export function detectModeration(value, customAgencies = []) {
+export function detectModeration(value, customAgencies = [], customKeywords = {}) {
   const original = String(value || '');
   const text = normalizeForModeration(original);
-  if (!text) return { flagged: false, categories: [], matchedTerms: [], isForbiddenAgency: false, matchedAgencies: [] };
+  if (!text) return { flagged: false, categories: [], matchedTerms: [], isForbiddenAgency: false, matchedAgencies: [], matchedAgency: null };
 
-  const allAgencies = [...new Set([...DEFAULT_FORBIDDEN_AGENCIES, ...customAgencies])];
+  const allAgencies = [...new Set([...DEFAULT_FORBIDDEN_AGENCIES, ...(customAgencies || [])])];
   const matchedAgencies = [];
   for (const agency of allAgencies) {
     const normalized = normalizeForModeration(agency);
@@ -121,12 +121,16 @@ export function detectModeration(value, customAgencies = []) {
     agency = [...new Set([...agency, ...matchedAgencies.map((a) => a.toLowerCase())])];
   }
 
-  const donation = matches(text, RULES.donation);
+  const customDonations = (customKeywords?.donation || []).map(normalizeForModeration).filter(Boolean);
+  const donationRules = [...RULES.donation, ...customDonations];
+  const donation = matches(text, donationRules);
   if (hasHumanitarianAppeal(text)) {
     donation.push('appel_humanitaire');
   }
 
-  const advertising = matches(text, RULES.advertising);
+  const customAds = (customKeywords?.advertising || []).map(normalizeForModeration).filter(Boolean);
+  const adRules = [...RULES.advertising, ...customAds];
+  const advertising = matches(text, adRules);
   const categories = [];
 
   if (isForbiddenAgency) {
@@ -137,7 +141,8 @@ export function detectModeration(value, customAgencies = []) {
 
   if (donation.length) categories.push('donation');
   if (advertising.length >= 2
-      || (advertising.length >= 1 && hasContactOrPriceSignal(original, text))) {
+      || (advertising.length >= 1 && hasContactOrPriceSignal(original, text))
+      || customAds.some((adTerm) => containsTerm(text, adTerm))) {
     categories.push('advertising');
   }
 

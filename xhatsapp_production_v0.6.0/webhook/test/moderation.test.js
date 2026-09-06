@@ -40,6 +40,26 @@ test('detects donation platforms and humanitarian appeals without auto-deletion'
   assert.equal(rib.isForbiddenAgency, false);
 });
 
+test('detects dynamic custom keywords for donations and advertising from admin dictionary', () => {
+  const customDonation = detectModeration(
+    'Participez a la cagnotte-solidaire-xyz pour nous soutenir',
+    [],
+    { donation: ['cagnotte-solidaire-xyz'] },
+  );
+  assert.equal(customDonation.flagged, true);
+  assert.ok(customDonation.categories.includes('donation'));
+  assert.equal(customDonation.isForbiddenAgency, false);
+
+  const customAd = detectModeration(
+    'Découvrez la nouvelle marque-exclusive-test en exclusivité',
+    [],
+    { advertising: ['marque-exclusive-test'] },
+  );
+  assert.equal(customAd.flagged, true);
+  assert.ok(customAd.categories.includes('advertising'));
+  assert.equal(customAd.isForbiddenAgency, false);
+});
+
 test('detects forbidden agencies from dictionary with auto-deletion flag', () => {
   const acmuv = detectModeration('Quelqu un a des avis sur ACMUV ?');
   assert.equal(acmuv.flagged, true);
