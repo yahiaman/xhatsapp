@@ -78,3 +78,31 @@ test('reads and updates group settings with encoded group ids', async (context) 
   assert.equal(calls[1].options.method, 'PUT');
   assert.deepEqual(JSON.parse(calls[1].options.body), { announce: true });
 });
+
+test('retrieves group info and removes participants with encoded group ids', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (options.method === 'GET') {
+      return new Response(JSON.stringify({ id: '123@g.us', participants: [{ id: 'p1@c.us' }] }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ success: true }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 's', apiKey: 'k' });
+  const group = await client.getGroup('123@g.us');
+  assert.equal(calls[0].url, 'http://openwa:2785/api/sessions/s/groups/123%40g.us');
+  assert.equal(calls[0].options.method, 'GET');
+  assert.equal(group.id, '123@g.us');
+
+  await client.removeParticipants('123@g.us', ['p1@c.us']);
+  assert.equal(calls[1].url, 'http://openwa:2785/api/sessions/s/groups/123%40g.us/participants');
+  assert.equal(calls[1].options.method, 'DELETE');
+  assert.deepEqual(JSON.parse(calls[1].options.body), { participants: ['p1@c.us'] });
+});
+

@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node src/server.js",
     "migrate": "node src/migrate.js",
-    "check": "node --check src/server.js && node --check src/admin.js && node --check src/db.js && node --check src/message.js && node --check src/policy.js && node --check src/moderation.js && node --check src/broadcast.js && node --check src/schedule.js && node --check src/scheduler.js && node --check src/recap.js && node --check src/openwa.js && node --check src/security.js && node --check src/migrate.js",
+    "check": "node --check src/server.js && node --check src/admin.js && node --check src/community.js && node --check src/db.js && node --check src/message.js && node --check src/policy.js && node --check src/moderation.js && node --check src/broadcast.js && node --check src/schedule.js && node --check src/scheduler.js && node --check src/recap.js && node --check src/openwa.js && node --check src/security.js && node --check src/migrate.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {

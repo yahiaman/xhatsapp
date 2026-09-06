@@ -86,6 +86,19 @@ import {
   summarizeConsolidated,
   summarizeGroup,
 } from './recap.js';
+import {
+  auditDuplicates,
+  buildDuplicateAdminAlert,
+  buildDuplicateAuditReport,
+  buildDuplicateRefusalDm,
+  buildFlashMessage,
+  buildLockNotice,
+  buildOnboardingDm,
+  buildPanicAlert,
+  buildUnlockNotice,
+  detectPanic,
+  parseCommunityCommand,
+} from './community.js';
 
 const port = Number(process.env.PORT || 3000);
 const webhookSecret = process.env.OPENWA_WEBHOOK_SECRET || '';
@@ -533,6 +546,244 @@ async function generateDailyRecap(localDate, settings) {
   }
 }
 
+async function handleCommunityCommand(message, command) {
+  if (command.type === 'block_all') {
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    let lockedCount = 0;
+    for (const group of monitoredGroups) {
+      try {
+        await openWa.updateGroupSettings(group.chat_id, { announce: true });
+        await openWa.sendText(group.chat_id, buildLockNotice()).catch(() => {});
+        lockedCount += 1;
+      } catch (error) {
+        console.error('Failed to lock group', { group: group.name, error: safeOperationalError(error) });
+      }
+    }
+    await openWa.sendText(
+      message.chatId,
+      `🔒 *TOUS LES GROUPES ONT ÉTÉ VERROUILLÉS*\n\n${lockedCount}/${monitoredGroups.length} groupe(s) surveillé(s) sont passés en mode "Annonce uniquement".\n\nPour rouvrir les discussions, tapez : *UNBLOCK ALL*`,
+    ).catch(() => {});
+    return { handled: true, status: 'all_blocked' };
+  }
+
+  if (command.type === 'unblock_all') {
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    let unlockedCount = 0;
+    for (const group of monitoredGroups) {
+      try {
+        await openWa.updateGroupSettings(group.chat_id, { announce: false });
+        await openWa.sendText(group.chat_id, buildUnlockNotice()).catch(() => {});
+        unlockedCount += 1;
+      } catch (error) {
+        console.error('Failed to unlock group', { group: group.name, error: safeOperationalError(error) });
+      }
+    }
+    await openWa.sendText(
+      message.chatId,
+      `🔓 *TOUS LES GROUPES ONT ÉTÉ DÉVERROUILLÉS*\n\n${unlockedCount}/${monitoredGroups.length} groupe(s) surveillé(s) sont de nouveau ouverts à tous les membres.`,
+    ).catch(() => {});
+    return { handled: true, status: 'all_unblocked' };
+  }
+
+  if (command.type === 'flash') {
+    if (command.error === 'flash_empty') {
+      await openWa.sendText(
+        message.chatId,
+        '⚠️ Le message du FLASH est vide. Format attendu : *FLASH <Votre message>*',
+      ).catch(() => {});
+      return { handled: false, reason: 'flash_empty' };
+    }
+
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+
+    // 1. Verrouillage préalable de sécurité
+    for (const group of monitoredGroups) {
+      await openWa.updateGroupSettings(group.chat_id, { announce: true }).catch(() => {});
+    }
+
+    // 2. Diffusion du flash
+    const flashBody = buildFlashMessage(command.message);
+    let sentCount = 0;
+    for (let index = 0; index < monitoredGroups.length; index += 1) {
+      const group = monitoredGroups[index];
+      try {
+        await openWa.sendText(group.chat_id, flashBody);
+        sentCount += 1;
+      } catch (error) {
+        console.error('Failed to broadcast flash to group', { group: group.name, error: safeOperationalError(error) });
+      }
+      if (broadcastDelayMs > 0 && index < monitoredGroups.length - 1) {
+        await delay(broadcastDelayMs);
+      }
+    }
+
+    await openWa.sendText(
+      message.chatId,
+      `🚨 *FLASH INFO OFFICIEL DIFFUSÉ*\n\nDiffusé dans ${sentCount}/${monitoredGroups.length} groupe(s).\n\n🔒 *Rappel :* Tous les groupes sont actuellement verrouillés. Tapez *UNBLOCK ALL* lorsque vous souhaitez rouvrir les échanges.`,
+    ).catch(() => {});
+    return { handled: true, status: 'flash_broadcasted' };
+  }
+
+  if (command.type === 'audit_doublons') {
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    await openWa.sendText(
+      message.chatId,
+      `🔍 Audit des membres en cours sur ${monitoredGroups.length} groupe(s)...`,
+    ).catch(() => {});
+
+    const groupsWithParticipants = [];
+    for (const group of monitoredGroups) {
+      try {
+        const groupInfo = await openWa.getGroup(group.chat_id);
+        groupsWithParticipants.push({
+          id: group.chat_id,
+          name: group.name || group.inventory_ref || group.chat_id,
+          participants: groupInfo?.participants || [],
+        });
+      } catch (error) {
+        console.error('Failed to retrieve group participants for audit', { group: group.name, error: safeOperationalError(error) });
+      }
+    }
+
+    const audit = auditDuplicates(groupsWithParticipants);
+    const report = buildDuplicateAuditReport(audit);
+    await openWa.sendText(message.chatId, report).catch(() => {});
+    return { handled: true, status: 'audit_completed' };
+  }
+
+  return { handled: false, reason: 'unknown_community_command' };
+}
+
+async function handleGroupJoinEvent(payload) {
+  const groupId = payload?.groupId;
+  const participantIds = Array.isArray(payload?.participantIds) ? payload.participantIds : [];
+  if (!groupId || !participantIds.length) {
+    return { ignored: true, reason: 'missing_group_or_participants' };
+  }
+
+  const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
+  if (!groupPolicy || !groupPolicy.enabled || !groupPolicy.is_monitored) {
+    return { ignored: true, reason: 'group_not_monitored' };
+  }
+
+  const allGroups = await listGroupPolicies();
+  const otherMonitoredGroups = allGroups.filter(
+    (g) => g.enabled && g.is_monitored && g.chat_id !== groupId,
+  );
+
+  const adminTarget = await getAdminTarget().catch(() => null);
+
+  const otherGroupsInfo = [];
+  for (const other of otherMonitoredGroups) {
+    try {
+      const info = await openWa.getGroup(other.chat_id);
+      if (info && Array.isArray(info.participants)) {
+        otherGroupsInfo.push({
+          group: other,
+          participants: info.participants,
+        });
+      }
+    } catch (error) {
+      console.warn('Could not inspect other group members for duplicate check', {
+        other_group: other.name,
+        error: safeOperationalError(error),
+      });
+    }
+  }
+
+  let currentGroupInfo = null;
+  try {
+    currentGroupInfo = await openWa.getGroup(groupId);
+  } catch (error) {
+    console.warn('Could not inspect current group info', { error: safeOperationalError(error) });
+  }
+
+  for (const participantId of participantIds) {
+    const rawDigits = participantId.replace(/\D/g, '');
+    const currentParticipant = currentGroupInfo?.participants?.find(
+      (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
+    );
+
+    if (currentParticipant?.isAdmin || currentParticipant?.isSuperAdmin) {
+      console.log('Group join: participant is admin/moderator, exempted from checks', {
+        participant_ref: safeReference(participantId),
+      });
+      continue;
+    }
+
+    let existingGroup = null;
+    for (const otherInfo of otherGroupsInfo) {
+      const found = otherInfo.participants.find(
+        (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
+      );
+      if (found) {
+        existingGroup = otherInfo.group;
+        break;
+      }
+    }
+
+    if (existingGroup) {
+      console.log('Group join: duplicate participant detected, kicking from new group', {
+        participant_ref: safeReference(participantId),
+        new_group: groupPolicy.name,
+        existing_group: existingGroup.name,
+      });
+
+      try {
+        await openWa.removeParticipants(groupId, [participantId]);
+      } catch (error) {
+        console.error('Failed to remove duplicate participant', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+
+      const refusalDm = buildDuplicateRefusalDm(
+        groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+        existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+      );
+      try {
+        await openWa.sendText(participantId, refusalDm);
+      } catch (error) {
+        console.error('Failed to send duplicate refusal DM', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+
+      if (adminTarget) {
+        const adminAlert = buildDuplicateAdminAlert({
+          senderPhone: rawDigits,
+          senderReference: safeReference(participantId),
+          newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+          existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+        });
+        await openWa.sendText(adminTarget.chat_id, adminAlert).catch(() => {});
+      }
+    } else {
+      console.log('Group join: first-time participant, sending onboarding DM', {
+        participant_ref: safeReference(participantId),
+        group: groupPolicy.name,
+      });
+      const onboardingDm = buildOnboardingDm();
+      try {
+        await openWa.sendText(participantId, onboardingDm);
+      } catch (error) {
+        console.error('Failed to send onboarding DM', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+    }
+  }
+
+  return { handled: true };
+}
+
 const app = express();
 app.disable('x-powered-by');
 
@@ -579,6 +830,19 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
     retryCount: Number(request.header('X-OpenWA-Retry-Count') || 0),
   };
 
+  if (delivery.eventName === 'group.join') {
+    try {
+      const joinResult = await handleGroupJoinEvent(payload);
+      response.status(200).json({ ok: true, event: 'group.join', ...joinResult });
+    } catch (error) {
+      console.error('Group join handling failed', {
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+      response.status(500).json({ ok: false, error: 'internal_error' });
+    }
+    return;
+  }
+
   if (delivery.eventName !== 'message.received') {
     response.status(200).json({ ok: true, ignored: true, reason: 'event_not_supported' });
     return;
@@ -613,11 +877,15 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
 
     let status = result.inserted ? 'stored' : 'duplicate';
     if (result.inserted && !message.fromMe && groupPolicy.is_admin) {
+      const communityCommand = parseCommunityCommand(message.text);
       const moderationCommand = parseModerationCommand(message.text);
       const broadcastCommand = parseBroadcastCommand(message.text);
       const recapCommand = parseRecapCommand(message.text);
       const communicationDraft = parseCommunicationDraft(message.text);
-      if (moderationCommand) {
+      if (communityCommand) {
+        const commandResult = await handleCommunityCommand(message, communityCommand);
+        status = commandResult.handled ? `community_${commandResult.status}` : commandResult.reason;
+      } else if (moderationCommand) {
         const commandResult = await handleModerationCommand(message, moderationCommand);
         status = commandResult.handled ? `moderation_${commandResult.status}` : commandResult.reason;
       } else if (recapCommand) {
@@ -663,6 +931,30 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
       } else if (detection.flagged) {
         const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false);
         status = alert ? 'flagged' : status;
+      } else {
+        const panic = detectPanic(message.text);
+        if (panic.isPanic) {
+          try {
+            const admin = await getAdminTarget();
+            if (admin) {
+              const panicAlert = buildPanicAlert({
+                groupName: groupPolicy.name,
+                groupReference: groupPolicy.inventory_ref || safeReference(message.chatId),
+                senderName: message.senderName,
+                senderReference: safeReference(message.senderId),
+                text: message.text,
+                matches: panic.matches,
+              });
+              await openWa.sendText(admin.chat_id, panicAlert);
+              console.log('Panic/rumor sentinel alert sent', {
+                group_ref: safeReference(message.chatId),
+                matches: panic.matches,
+              });
+            }
+          } catch (error) {
+            console.error('Panic sentinel delivery failed', { error: safeOperationalError(error) });
+          }
+        }
       }
     }
 

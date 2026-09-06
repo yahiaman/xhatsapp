@@ -43,6 +43,23 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
         forEveryone: true,
       });
     },
+    getGroup(chatId) {
+      return request(
+        'get_group',
+        'GET',
+        `/groups/${encodeURIComponent(chatId)}`,
+      );
+    },
+    removeParticipants(chatId, participants) {
+      return request(
+        'remove_participants',
+        'DELETE',
+        `/groups/${encodeURIComponent(chatId)}/participants`,
+        {
+          participants: Array.isArray(participants) ? participants : [participants],
+        },
+      );
+    },
     getGroupSettings(chatId) {
       return request(
         'get_group_settings',
