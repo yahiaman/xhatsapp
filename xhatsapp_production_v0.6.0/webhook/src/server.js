@@ -725,6 +725,7 @@ app.post('/admin/api/agencies', async (request, response) => {
       response.status(409).json({ ok: false, error: 'agency_already_exists' });
       return;
     }
+    console.error('Agency add failed', { error: error instanceof Error ? error.message : 'unknown_error' });
     response.status(500).json({ ok: false, error: 'agency_add_failed' });
   }
 });
@@ -767,6 +768,7 @@ app.post('/admin/api/keywords', async (request, response) => {
       response.status(409).json({ ok: false, error: 'keyword_already_exists' });
       return;
     }
+    console.error('Keyword add failed', { error: error instanceof Error ? error.message : 'unknown_error' });
     response.status(500).json({ ok: false, error: 'keyword_add_failed' });
   }
 });

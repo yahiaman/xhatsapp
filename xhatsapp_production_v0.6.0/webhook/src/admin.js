@@ -150,9 +150,10 @@ const adBody=document.getElementById('ads'), adInput=document.getElementById('ne
 let token=sessionStorage.getItem('xhatsapp_admin_token')||'';
 let allAgencies=[], allKeywords=[];
 
+const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.'};
 function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'};}
 function status(text,error=false){statusBox.textContent=text;statusBox.className='status '+(error?'error':'ok');}
-async function api(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(response.status===401){logout();throw new Error('Jeton refusé');}const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.error||('HTTP '+response.status));return data;}
+async function api(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(response.status===401){logout();throw new Error('Jeton refusé');}const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(errLabels[data.error]||data.error||('HTTP '+response.status));return data;}
 
 function selectTab(tab){
   tabAgenciesBtn.className=tab==='agencies'?'':'secondary';

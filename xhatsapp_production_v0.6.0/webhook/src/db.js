@@ -258,12 +258,18 @@ export async function listForbiddenAgencies() {
 }
 
 export async function addForbiddenAgency(name, normalizedName) {
+  const normalized = normalizedName || String(name || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
   const result = await pool.query(
     `INSERT INTO forbidden_agencies (name, normalized_name)
      VALUES ($1, $2)
      ON CONFLICT (normalized_name) DO UPDATE SET name = EXCLUDED.name
      RETURNING id, name, normalized_name, created_at`,
-    [name, normalizedName],
+    [name, normalized],
   );
   return result.rows[0];
 }
