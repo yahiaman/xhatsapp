@@ -64,7 +64,7 @@ done
 
 webhook_payload=$(mktemp)
 jq -nc --arg url "https://${domain}/webhook/openwa" --arg secret "${webhook_secret}" \
-  '{url:$url,events:["message.received"],secret:$secret,retryCount:3}' >"${webhook_payload}"
+  '{url:$url,events:["message.received","group.join"],secret:$secret,retryCount:3}' >"${webhook_payload}"
 webhook_response=$(mktemp)
 curl -fsS -X POST -H 'Content-Type: application/json' -H "X-API-Key: ${master_key}" \
   --data-binary "@${webhook_payload}" \

@@ -1,4 +1,4 @@
-﻿# Fichiers d'environnement et secrets
+# Fichiers d'environnement et secrets
 .env
 .env.local
 .env.*.local
@@ -45,3 +45,5 @@ Thumbs.db
 *.njsproj
 *.sln
 *.swp
+*.tar.gz
+*.zip
