@@ -106,3 +106,30 @@ test('retrieves group info and removes participants with encoded group ids', asy
   assert.deepEqual(JSON.parse(calls[1].options.body), { participants: ['p1@c.us'] });
 });
 
+test('retrieves and rejects membership requests with encoded group ids', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (options.method === 'GET') {
+      return new Response(JSON.stringify([{ participantId: 'req1@c.us' }]), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ success: true, message: 'Membership requests rejected' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 's', apiKey: 'k' });
+  const requests = await client.getMembershipRequests('123@g.us');
+  assert.equal(calls[0].url, 'http://openwa:2785/api/sessions/s/groups/123%40g.us/membership-requests');
+  assert.equal(calls[0].options.method, 'GET');
+  assert.deepEqual(requests, [{ participantId: 'req1@c.us' }]);
+
+  await client.rejectMembershipRequests('123@g.us', ['req1@c.us']);
+  assert.equal(calls[1].url, 'http://openwa:2785/api/sessions/s/groups/123%40g.us/membership-requests/reject');
+  assert.equal(calls[1].options.method, 'POST');
+  assert.deepEqual(JSON.parse(calls[1].options.body), { participants: ['req1@c.us'] });
+});
+

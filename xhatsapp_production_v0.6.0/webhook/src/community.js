@@ -126,7 +126,10 @@ export function buildUnlockNotice() {
   ].join('\n');
 }
 
-export function buildOnboardingDm() {
+export function buildOnboardingDm(customTemplate = null) {
+  if (customTemplate && typeof customTemplate === 'string' && customTemplate.trim()) {
+    return customTemplate.trim();
+  }
   return [
     'Assalamu alaykum wa rahmatullah chère sœur / cher frère,',
     '',
@@ -145,14 +148,20 @@ export function buildOnboardingDm() {
   ].join('\n');
 }
 
-export function buildDuplicateRefusalDm(newGroupName, existingGroupName) {
+export function buildDuplicateRefusalDm(newGroupName, existingGroupName, customTemplate = null) {
+  if (customTemplate && typeof customTemplate === 'string' && customTemplate.trim()) {
+    return customTemplate
+      .replace(/{newGroupName}/g, newGroupName)
+      .replace(/{existingGroupName}/g, existingGroupName)
+      .trim();
+  }
   return [
     'Assalamu alaykum wa rahmatullah chère sœur / cher frère,',
     '',
     `Vous venez de tenter de rejoindre le groupe *${newGroupName}*, mais notre système a constaté que vous êtes déjà membre du groupe *${existingGroupName}*.`,
     '',
     'Afin de permettre au plus grand nombre de futurs pèlerins d’accéder aux échanges (les places étant limitées par WhatsApp) :',
-    '👉 *Votre adhésion à ce second groupe a été automatiquement refusée.*',
+    '👉 *Votre demande pour ce second groupe a été automatiquement refusée.*',
     '',
     '💡 *Rassurez-vous :* Tous nos groupes bénéficient rigoureusement des mêmes annonces, des mêmes alertes officielles et du même récapitulatif quotidien de 20h10. Vous ne manquez absolument rien en restant dans votre groupe actuel.',
     '',
@@ -166,14 +175,18 @@ export function buildDuplicateAdminAlert({
   senderReference,
   newGroupName,
   existingGroupName,
+  isRequest = false,
 }) {
   const member = senderPhone ? `+${senderPhone} (${senderReference})` : senderReference;
+  const actionText = isRequest
+    ? 'Demande d’adhésion automatiquement rejetée + MP explicatif envoyé.'
+    : 'Membre automatiquement exclu du second groupe + MP explicatif envoyé.';
   return [
     '🛡️ *PROTECTION MULTI-GROUPES (DOUBLON REFUSÉ)*',
     `👤 *Membre :* ${member}`,
     `🚫 *Groupe tenté :* ${newGroupName}`,
     `✅ *Déjà présent dans :* ${existingGroupName}`,
-    '⚙️ *Action :* Membre automatiquement exclu du second groupe + MP explicatif envoyé.',
+    `⚙️ *Action :* ${actionText}`,
   ].join('\n');
 }
 

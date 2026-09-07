@@ -107,16 +107,24 @@ test('builds onboarding and duplicate refusal DMs', () => {
   assert.ok(refusal.includes('Groupe_01'));
   assert.ok(refusal.includes('automatiquement refusée'));
 
+  const customOnboarding = buildOnboardingDm('Bienvenue personnalisé !');
+  assert.equal(customOnboarding, 'Bienvenue personnalisé !');
+
+  const customRefusal = buildDuplicateRefusalDm('G2', 'G1', 'Refus de {newGroupName} car déjà dans {existingGroupName}');
+  assert.equal(customRefusal, 'Refus de G2 car déjà dans G1');
+
   const adminAlert = buildDuplicateAdminAlert({
     senderPhone: '33612345678',
     senderReference: 'usr-999',
     newGroupName: 'Groupe_02',
     existingGroupName: 'Groupe_01',
+    isRequest: true,
   });
   assert.ok(adminAlert.includes('DOUBLON REFUSÉ'));
   assert.ok(adminAlert.includes('+33612345678'));
   assert.ok(adminAlert.includes('Groupe_02'));
   assert.ok(adminAlert.includes('Groupe_01'));
+  assert.ok(adminAlert.includes('Demande d’adhésion automatiquement rejetée'));
 });
 
 test('audits duplicates across groups while strictly excluding admins', () => {

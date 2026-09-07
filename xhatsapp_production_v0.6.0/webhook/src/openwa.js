@@ -75,5 +75,32 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
         settings,
       );
     },
+    getMembershipRequests(chatId) {
+      return request(
+        'get_membership_requests',
+        'GET',
+        `/groups/${encodeURIComponent(chatId)}/membership-requests`,
+      );
+    },
+    rejectMembershipRequests(chatId, participants) {
+      return request(
+        'reject_membership_requests',
+        'POST',
+        `/groups/${encodeURIComponent(chatId)}/membership-requests/reject`,
+        {
+          participants: Array.isArray(participants) ? participants : [participants],
+        },
+      );
+    },
+    approveMembershipRequests(chatId, participants) {
+      return request(
+        'approve_membership_requests',
+        'POST',
+        `/groups/${encodeURIComponent(chatId)}/membership-requests/approve`,
+        {
+          participants: Array.isArray(participants) ? participants : [participants],
+        },
+      );
+    },
   };
 }

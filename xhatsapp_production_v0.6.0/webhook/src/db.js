@@ -345,6 +345,36 @@ export async function deleteExemptModerator(id) {
   return result.rows[0] || null;
 }
 
+export async function listCommunityTemplates() {
+  const result = await pool.query(
+    `SELECT id, content, description, updated_at
+     FROM community_templates
+     ORDER BY id ASC`,
+  );
+  return result.rows;
+}
+
+export async function getCommunityTemplate(id) {
+  const result = await pool.query(
+    `SELECT id, content, description, updated_at
+     FROM community_templates
+     WHERE id = $1`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
+export async function updateCommunityTemplate(id, content) {
+  const result = await pool.query(
+    `INSERT INTO community_templates (id, content, updated_at)
+     VALUES ($1, $2, now())
+     ON CONFLICT (id) DO UPDATE SET content = EXCLUDED.content, updated_at = now()
+     RETURNING id, content, description, updated_at`,
+    [id, content],
+  );
+  return result.rows[0];
+}
+
 export async function markModerationAlertNotified(alertId, adminMessageId) {
   await pool.query(
     `UPDATE moderation_alerts

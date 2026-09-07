@@ -14,8 +14,10 @@ import {
   finalizeBroadcastDraft,
   getBroadcastExecution,
   getAdminTarget,
+  getCommunityTemplate,
   getGroupPolicy,
   getPendingModerationAlert,
+  listCommunityTemplates,
   listExemptModerators,
   listForbiddenAgencies,
   listGroupPolicies,
@@ -57,12 +59,13 @@ import {
   markRecapDeliveryFailed,
   markRecapDeliverySending,
   markRecapDeliverySent,
+  updateCommunityTemplate,
   updateRecapSettings,
 } from './db.js';
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
 import { verifyOpenWaSignature } from './security.js';
-import { adminAuth, adminHtml, parseAgency, parseKeyword, parseModeratorInput, parsePolicy, readGroupInventory } from './admin.js';
+import { adminAuth, adminHtml, parseAgency, parseKeyword, parseModeratorInput, parsePolicy, parseTemplateInput, readGroupInventory } from './admin.js';
 import {
   buildModerationAlert,
   createAlertCode,
@@ -196,6 +199,25 @@ async function reloadExemptModerators() {
     console.log('Exempt moderators cache reloaded', { count: exemptModeratorsCache.length });
   } catch (error) {
     console.warn('Exempt moderators cache reload failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
+let communityTemplatesCache = {
+  onboarding_dm: null,
+  duplicate_refusal_dm: null,
+};
+
+async function reloadCommunityTemplates() {
+  try {
+    const templates = await listCommunityTemplates();
+    for (const t of templates) {
+      communityTemplatesCache[t.id] = t.content;
+    }
+    console.log('Community templates cache reloaded', { count: templates.length });
+  } catch (error) {
+    console.warn('Community templates cache reload failed', {
       error: error instanceof Error ? error.message : 'unknown_error',
     });
   }
@@ -805,6 +827,7 @@ async function handleGroupJoinEvent(payload) {
       const refusalDm = buildDuplicateRefusalDm(
         groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
         existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+        communityTemplatesCache.duplicate_refusal_dm,
       );
       try {
         await openWa.sendText(directChatId, refusalDm);
@@ -831,7 +854,7 @@ async function handleGroupJoinEvent(payload) {
         direct_chat_id: directChatId,
         group: groupPolicy.name,
       });
-      const onboardingDm = buildOnboardingDm();
+      const onboardingDm = buildOnboardingDm(communityTemplatesCache.onboarding_dm);
       try {
         await openWa.sendText(directChatId, onboardingDm);
         console.log('Onboarding DM sent successfully', { target: directChatId });
@@ -841,6 +864,148 @@ async function handleGroupJoinEvent(payload) {
           error: safeOperationalError(error),
         });
       }
+    }
+  }
+
+  return { handled: true };
+}
+
+async function handleGroupJoinRequestEvent(payload) {
+  const data = payload?.data || payload?.message || payload || {};
+  const groupId = data?.groupId || payload?.groupId || data?.chatId || payload?.chatId;
+  const rawParticipants = data?.participantIds || payload?.participantIds || data?.participants || payload?.participants || data?.requesterId;
+  const participantIds = Array.isArray(rawParticipants)
+    ? rawParticipants.map((p) => (typeof p === 'string' ? p : (p?.id || p?.phoneNumber || p?.number || ''))).filter(Boolean)
+    : (typeof rawParticipants === 'string' && rawParticipants ? [rawParticipants] : []);
+
+  console.log('Group join request event received', {
+    group_id: groupId,
+    participants_count: participantIds.length,
+    participants: participantIds,
+  });
+
+  if (!groupId || !participantIds.length) {
+    console.warn('Group join request event ignored: missing group or participants', { payload });
+    return { ignored: true, reason: 'missing_group_or_participants' };
+  }
+
+  const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
+  if (!groupPolicy || !groupPolicy.enabled || !groupPolicy.is_monitored) {
+    console.log('Group join request event ignored: group not monitored or disabled', {
+      group_id: groupId,
+      enabled: groupPolicy?.enabled,
+      monitored: groupPolicy?.is_monitored,
+    });
+    return { ignored: true, reason: 'group_not_monitored' };
+  }
+
+  const allGroups = await listGroupPolicies();
+  const otherMonitoredGroups = allGroups.filter(
+    (g) => g.enabled && g.is_monitored && g.chat_id !== groupId,
+  );
+
+  const adminTarget = await getAdminTarget().catch(() => null);
+
+  const otherGroupsInfo = [];
+  for (const other of otherMonitoredGroups) {
+    try {
+      const info = await openWa.getGroup(other.chat_id);
+      if (info && Array.isArray(info.participants)) {
+        otherGroupsInfo.push({
+          group: other,
+          participants: info.participants,
+        });
+      }
+    } catch (error) {
+      console.warn('Could not inspect other group members for duplicate join request check', {
+        other_group: other.name,
+        error: safeOperationalError(error),
+      });
+    }
+  }
+
+  for (const participantId of participantIds) {
+    const rawDigits = participantId.replace(/\D/g, '');
+    const directChatId = (rawDigits ? `${rawDigits}@c.us` : null)
+      || (participantId.includes('@c.us') ? participantId : null)
+      || participantId;
+
+    if (
+      isPhoneExempt(participantId, exemptModeratorsCache) ||
+      (rawDigits && isPhoneExempt(rawDigits, exemptModeratorsCache))
+    ) {
+      console.log('Group join request: participant is exempt/moderator, leaving for admin manual review', {
+        participant_ref: safeReference(participantId),
+      });
+      continue;
+    }
+
+    let existingGroup = null;
+    for (const otherInfo of otherGroupsInfo) {
+      const found = otherInfo.participants.find(
+        (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
+      );
+      if (found) {
+        if (
+          found.isAdmin ||
+          found.isSuperAdmin ||
+          isPhoneExempt(found.id || found.number, exemptModeratorsCache)
+        ) {
+          continue;
+        }
+        existingGroup = otherInfo.group;
+        break;
+      }
+    }
+
+    if (existingGroup) {
+      console.log('Group join request: duplicate requester detected, rejecting request', {
+        participant_ref: safeReference(participantId),
+        direct_chat_id: directChatId,
+        new_group: groupPolicy.name,
+        existing_group: existingGroup.name,
+      });
+
+      try {
+        await openWa.rejectMembershipRequests(groupId, [participantId]);
+        console.log('Membership request rejected on WhatsApp', { groupId, participantId });
+      } catch (error) {
+        console.error('Failed to reject membership request', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+
+      const refusalDm = buildDuplicateRefusalDm(
+        groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+        existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+        communityTemplatesCache.duplicate_refusal_dm,
+      );
+      try {
+        await openWa.sendText(directChatId, refusalDm);
+        console.log('Duplicate refusal DM sent for join request', { target: directChatId });
+      } catch (error) {
+        console.error('Failed to send duplicate refusal DM', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+
+      if (adminTarget) {
+        const adminAlert = buildDuplicateAdminAlert({
+          senderPhone: rawDigits || participantId,
+          senderReference: safeReference(participantId),
+          newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+          existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+          isRequest: true,
+        });
+        await openWa.sendText(adminTarget.chat_id, adminAlert).catch(() => {});
+      }
+    } else {
+      console.log('Group join request: legitimate new applicant, awaiting admin manual approval', {
+        participant_ref: safeReference(participantId),
+        group: groupPolicy.name,
+      });
     }
   }
 
@@ -899,6 +1064,19 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
       response.status(200).json({ ok: true, event: 'group.join', ...joinResult });
     } catch (error) {
       console.error('Group join handling failed', {
+        error: error instanceof Error ? error.message : 'unknown_error',
+      });
+      response.status(500).json({ ok: false, error: 'internal_error' });
+    }
+    return;
+  }
+
+  if (delivery.eventName === 'group.join_request') {
+    try {
+      const requestResult = await handleGroupJoinRequestEvent(payload);
+      response.status(200).json({ ok: true, event: 'group.join_request', ...requestResult });
+    } catch (error) {
+      console.error('Group join request handling failed', {
         error: error instanceof Error ? error.message : 'unknown_error',
       });
       response.status(500).json({ ok: false, error: 'internal_error' });
@@ -1335,6 +1513,31 @@ app.put('/admin/api/groups/:id', async (request, response) => {
   }
 });
 
+app.get('/admin/api/templates', async (_request, response) => {
+  try {
+    const templates = await listCommunityTemplates();
+    response.json({ ok: true, templates });
+  } catch {
+    response.status(500).json({ ok: false, error: 'templates_fetch_failed' });
+  }
+});
+
+app.put('/admin/api/templates/:id', async (request, response) => {
+  const parsed = parseTemplateInput(request.body);
+  if (!parsed) {
+    response.status(400).json({ ok: false, error: 'invalid_template' });
+    return;
+  }
+  try {
+    const template = await updateCommunityTemplate(request.params.id, parsed.content);
+    await reloadCommunityTemplates();
+    console.log('Community template updated', { id: template.id });
+    response.json({ ok: true, template });
+  } catch {
+    response.status(500).json({ ok: false, error: 'template_update_failed' });
+  }
+});
+
 app.use((_request, response) => {
   response.status(404).json({ ok: false, error: 'not_found' });
 });
@@ -1369,6 +1572,14 @@ try {
   await reloadExemptModerators();
 } catch (error) {
   console.warn('Exempt moderators initialization failed', {
+    error: error instanceof Error ? error.message : 'unknown_error',
+  });
+}
+
+try {
+  await reloadCommunityTemplates();
+} catch (error) {
+  console.warn('Community templates initialization failed', {
     error: error instanceof Error ? error.message : 'unknown_error',
   });
 }

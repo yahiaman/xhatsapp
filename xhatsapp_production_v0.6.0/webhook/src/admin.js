@@ -78,6 +78,12 @@ export function parseModeratorInput(body) {
   return { phone, label };
 }
 
+export function parseTemplateInput(body) {
+  const content = String(body?.content || '').trim();
+  if (!content || content.length > 4000) return null;
+  return { content };
+}
+
 export const adminHtml = `<!doctype html>
 <html lang="fr">
 <head>
@@ -155,6 +161,21 @@ export const adminHtml = `<!doctype html>
     <input id="search-mod" type="text" placeholder="Filtrer les modérateurs..." style="max-width:320px;margin-bottom:10px">
     <div style="max-height:300px;overflow:auto;border:1px solid #dbe4e1;border-radius:8px">
       <table><thead><tr><th>Numéro</th><th>Nom / Rôle</th><th>Ajouté le</th><th>Action</th></tr></thead><tbody id="mods"></tbody></table>
+    </div>
+  </div>
+
+  <h2>Messages automatiques de la communauté</h2>
+  <p class="muted">Messages personnalisés envoyés automatiquement en message privé (DM) sur WhatsApp aux pèlerins.</p>
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:18px">
+    <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
+      <label for="template-onboarding"><strong>📥 Message de bienvenue (Onboarding DM)</strong><br><span class="muted" style="font-size:0.85rem">Envoyé en privé dès qu'un nouveau pèlerin est accepté dans un groupe surveillé :</span></label>
+      <textarea id="template-onboarding" style="min-height:160px;margin:8px 0;font-size:0.88rem"></textarea>
+      <button id="save-onboarding">Enregistrer le message de bienvenue</button>
+    </div>
+    <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
+      <label for="template-refusal"><strong>🚫 Message de refus de doublon (DM privé)</strong><br><span class="muted" style="font-size:0.85rem">Variables : <code>{newGroupName}</code> (groupe demandé) et <code>{existingGroupName}</code> (groupe existant) :</span></label>
+      <textarea id="template-refusal" style="min-height:160px;margin:8px 0;font-size:0.88rem"></textarea>
+      <button id="save-refusal">Enregistrer le message de refus</button>
     </div>
   </div>
 
@@ -270,12 +291,24 @@ async function loadModerators(){
   }catch(err){console.error(err);}
 }
 
+async function loadTemplates(){
+  try{
+    const data=await api('/admin/api/templates');
+    if(data.templates){
+      for(const t of data.templates){
+        if(t.id==='onboarding_dm') document.getElementById('template-onboarding').value=t.content;
+        if(t.id==='duplicate_refusal_dm') document.getElementById('template-refusal').value=t.content;
+      }
+    }
+  }catch(err){console.error(err);}
+}
+
 async function load(){
   const [groups,schedules,recap]=await Promise.all([api('/admin/api/groups'),api('/admin/api/schedules'),api('/admin/api/recap-settings')]);
   render(groups.groups);
   renderSchedules(schedules.schedules);
   document.getElementById('recap-signature').value=recap.settings.signature||'';
-  await Promise.all([loadAgencies(), loadKeywords(), loadModerators()]);
+  await Promise.all([loadAgencies(), loadKeywords(), loadModerators(), loadTemplates()]);
   status(groups.groups.length+' groupe(s), '+allAgencies.length+' agence(s), '+allKeywords.length+' mot(s)-clé(s), '+allModerators.length+' modérateur(s) chargé(s)');
 }
 
@@ -314,6 +347,18 @@ document.getElementById('add-mod').onclick=async()=>{
     status('Modérateur « '+(label?label+' ('+phone+')':phone)+' » ajouté');
     await loadModerators();
   }catch(err){status(err.message,true);}
+};
+
+document.getElementById('save-onboarding').onclick=async()=>{
+  const content=document.getElementById('template-onboarding').value.trim();
+  if(!content){status('Le message de bienvenue ne peut pas être vide',true);return;}
+  try{await api('/admin/api/templates/onboarding_dm',{method:'PUT',body:JSON.stringify({content})});status('Message de bienvenue enregistré');}catch(err){status(err.message,true);}
+};
+
+document.getElementById('save-refusal').onclick=async()=>{
+  const content=document.getElementById('template-refusal').value.trim();
+  if(!content){status('Le message de refus ne peut pas être vide',true);return;}
+  try{await api('/admin/api/templates/duplicate_refusal_dm',{method:'PUT',body:JSON.stringify({content})});status('Message de refus enregistré');}catch(err){status(err.message,true);}
 };
 
 async function connect(){token=tokenInput.value.trim();sessionStorage.setItem('xhatsapp_admin_token',token);login.hidden=true;panel.hidden=false;try{await load();}catch(error){status(error.message,true);}}
