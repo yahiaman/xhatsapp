@@ -684,14 +684,31 @@ async function handleCommunityCommand(message, command) {
 }
 
 async function handleGroupJoinEvent(payload) {
-  const groupId = payload?.groupId;
-  const participantIds = Array.isArray(payload?.participantIds) ? payload.participantIds : [];
+  const data = payload?.data || payload?.message || payload || {};
+  const groupId = data?.groupId || payload?.groupId || data?.chatId || payload?.chatId;
+  const rawParticipants = data?.participantIds || payload?.participantIds || data?.participants || payload?.participants;
+  const participantIds = Array.isArray(rawParticipants)
+    ? rawParticipants.map((p) => (typeof p === 'string' ? p : (p?.id || p?.phoneNumber || p?.number || ''))).filter(Boolean)
+    : (typeof rawParticipants === 'string' && rawParticipants ? [rawParticipants] : []);
+
+  console.log('Group join event received', {
+    group_id: groupId,
+    participants_count: participantIds.length,
+    participants: participantIds,
+  });
+
   if (!groupId || !participantIds.length) {
+    console.warn('Group join event ignored: missing group or participants', { payload });
     return { ignored: true, reason: 'missing_group_or_participants' };
   }
 
   const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
   if (!groupPolicy || !groupPolicy.enabled || !groupPolicy.is_monitored) {
+    console.log('Group join event ignored: group not monitored or disabled', {
+      group_id: groupId,
+      enabled: groupPolicy?.enabled,
+      monitored: groupPolicy?.is_monitored,
+    });
     return { ignored: true, reason: 'group_not_monitored' };
   }
 
@@ -733,10 +750,16 @@ async function handleGroupJoinEvent(payload) {
       (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
     );
 
+    const directChatId = (currentParticipant?.number ? `${currentParticipant.number}@c.us` : null)
+      || (participantId.includes('@c.us') ? participantId : null)
+      || currentParticipant?.id
+      || participantId;
+
     if (
       currentParticipant?.isAdmin ||
       currentParticipant?.isSuperAdmin ||
-      isPhoneExempt(participantId, exemptModeratorsCache)
+      isPhoneExempt(participantId, exemptModeratorsCache) ||
+      (rawDigits && isPhoneExempt(rawDigits, exemptModeratorsCache))
     ) {
       console.log('Group join: participant is admin/moderator/exempt, exempted from checks', {
         participant_ref: safeReference(participantId),
@@ -750,7 +773,11 @@ async function handleGroupJoinEvent(payload) {
         (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
       );
       if (found) {
-        if (found.isAdmin || found.isSuperAdmin || isPhoneExempt(found.id || found.number, exemptModeratorsCache)) {
+        if (
+          found.isAdmin ||
+          found.isSuperAdmin ||
+          isPhoneExempt(found.id || found.number, exemptModeratorsCache)
+        ) {
           continue;
         }
         existingGroup = otherInfo.group;
@@ -761,6 +788,7 @@ async function handleGroupJoinEvent(payload) {
     if (existingGroup) {
       console.log('Group join: duplicate participant detected, kicking from new group', {
         participant_ref: safeReference(participantId),
+        direct_chat_id: directChatId,
         new_group: groupPolicy.name,
         existing_group: existingGroup.name,
       });
@@ -779,7 +807,8 @@ async function handleGroupJoinEvent(payload) {
         existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
       );
       try {
-        await openWa.sendText(participantId, refusalDm);
+        await openWa.sendText(directChatId, refusalDm);
+        console.log('Duplicate refusal DM sent', { target: directChatId });
       } catch (error) {
         console.error('Failed to send duplicate refusal DM', {
           participant_ref: safeReference(participantId),
@@ -789,7 +818,7 @@ async function handleGroupJoinEvent(payload) {
 
       if (adminTarget) {
         const adminAlert = buildDuplicateAdminAlert({
-          senderPhone: rawDigits,
+          senderPhone: rawDigits || currentParticipant?.number || participantId,
           senderReference: safeReference(participantId),
           newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
@@ -799,11 +828,13 @@ async function handleGroupJoinEvent(payload) {
     } else {
       console.log('Group join: first-time participant, sending onboarding DM', {
         participant_ref: safeReference(participantId),
+        direct_chat_id: directChatId,
         group: groupPolicy.name,
       });
       const onboardingDm = buildOnboardingDm();
       try {
-        await openWa.sendText(participantId, onboardingDm);
+        await openWa.sendText(directChatId, onboardingDm);
+        console.log('Onboarding DM sent successfully', { target: directChatId });
       } catch (error) {
         console.error('Failed to send onboarding DM', {
           participant_ref: safeReference(participantId),
