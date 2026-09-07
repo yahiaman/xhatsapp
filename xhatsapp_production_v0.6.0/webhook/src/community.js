@@ -43,6 +43,10 @@ export function parseCommunityCommand(rawText) {
     return { type: 'audit_doublons' };
   }
 
+  if (normalized === 'MODERATEURS' || normalized === 'MODERATEUR' || normalized === 'LISTE MODERATEURS' || normalized === 'WHITELIST') {
+    return { type: 'list_moderators' };
+  }
+
   if (/^FLASH(?:\s+|:|$)/i.test(trimmed)) {
     const flashBody = trimmed.replace(/^FLASH(?:\s*:|\s+)?/i, '').trim();
     if (!flashBody) {
@@ -173,6 +177,34 @@ export function buildDuplicateAdminAlert({
   ].join('\n');
 }
 
+export function normalizePhoneNumber(raw) {
+  if (!raw) return '';
+  const digits = String(raw).replace(/\D/g, '');
+  if (/^0[1-9]\d{8}$/.test(digits)) {
+    return `33${digits.slice(1)}`;
+  }
+  return digits;
+}
+
+export function isPhoneExempt(phoneOrId, exemptList = []) {
+  if (!phoneOrId || !Array.isArray(exemptList) || exemptList.length === 0) return false;
+  const rawDigits = String(phoneOrId).split('@')[0].replace(/\D/g, '');
+  const normalized = normalizePhoneNumber(rawDigits);
+
+  return exemptList.some((item) => {
+    const itemDigits = typeof item === 'string'
+      ? item.replace(/\D/g, '')
+      : String(item.normalized_phone || item.phone || '').replace(/\D/g, '');
+    const itemNorm = normalizePhoneNumber(itemDigits);
+    return (
+      rawDigits === itemDigits ||
+      normalized === itemNorm ||
+      (itemNorm.length >= 9 && normalized.endsWith(itemNorm)) ||
+      (normalized.length >= 9 && itemNorm.endsWith(normalized))
+    );
+  });
+}
+
 export function formatParticipantPhone(participant) {
   if (participant.number) {
     return participant.number.replace(/\D/g, '');
@@ -184,18 +216,30 @@ export function formatParticipantPhone(participant) {
   return '';
 }
 
-export function auditDuplicates(groupsData) {
+export function auditDuplicates(groupsData, exemptList = []) {
   const adminNumbers = new Set();
   const allPilgrims = new Map();
+
+  // Add explicit exempt list to admin numbers whitelist
+  for (const item of exemptList) {
+    const itemDigits = typeof item === 'string'
+      ? item.replace(/\D/g, '')
+      : String(item.normalized_phone || item.phone || '').replace(/\D/g, '');
+    const norm = normalizePhoneNumber(itemDigits);
+    if (itemDigits) adminNumbers.add(itemDigits);
+    if (norm) adminNumbers.add(norm);
+  }
 
   // Step 1: identify all admins across all groups
   for (const group of groupsData) {
     for (const p of group.participants || []) {
       const phone = formatParticipantPhone(p);
+      const normPhone = normalizePhoneNumber(phone);
       const key = phone || p.id;
       if (p.isAdmin || p.isSuperAdmin) {
         if (key) adminNumbers.add(key);
         if (phone) adminNumbers.add(phone);
+        if (normPhone) adminNumbers.add(normPhone);
         if (p.id) adminNumbers.add(p.id);
       }
     }
@@ -206,12 +250,20 @@ export function auditDuplicates(groupsData) {
   for (const group of groupsData) {
     for (const p of group.participants || []) {
       const phone = formatParticipantPhone(p);
+      const normPhone = normalizePhoneNumber(phone);
       const key = phone || p.id;
       if (!key) continue;
 
       totalPresences += 1;
-      // Skip admins/moderators
-      if (adminNumbers.has(key) || adminNumbers.has(phone) || adminNumbers.has(p.id)) {
+      // Skip admins/moderators or whitelisted
+      if (
+        adminNumbers.has(key) ||
+        adminNumbers.has(phone) ||
+        adminNumbers.has(normPhone) ||
+        adminNumbers.has(p.id) ||
+        isPhoneExempt(phone, exemptList) ||
+        isPhoneExempt(p.id, exemptList)
+      ) {
         continue;
       }
 
@@ -280,3 +332,31 @@ export function buildDuplicateAuditReport(audit) {
 
   return lines.join('\n');
 }
+
+export function buildModeratorsListMessage(moderatorsList = []) {
+  if (!moderatorsList.length) {
+    return [
+      '🛡️ *LISTE DES MODÉRATEURS & EXEMPTÉS*',
+      '───────────────────────────',
+      'Aucun modérateur n’est enregistré dans la liste d’exclusion.',
+      '',
+      'ℹ️ _Vous pouvez ajouter des numéros depuis la console web /admin dans l’onglet « 🛡️ Modérateurs & Exemptés »._',
+    ].join('\n');
+  }
+
+  const lines = [
+    '🛡️ *LISTE DES MODÉRATEURS & EXEMPTÉS*',
+    '───────────────────────────',
+    `Total enregistrés : ${moderatorsList.length}`,
+    'ℹ️ _Ces numéros sont autorisés dans tous les groupes sans être exclus._',
+    '',
+  ];
+
+  moderatorsList.forEach((m, idx) => {
+    const labelPart = m.label ? ` — *${m.label}*` : '';
+    lines.push(`${idx + 1}. ${m.phone}${labelPart}`);
+  });
+
+  return lines.join('\n');
+}
+

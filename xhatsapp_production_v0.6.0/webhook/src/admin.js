@@ -70,6 +70,14 @@ export function parseKeyword(body) {
   return { category, term };
 }
 
+export function parseModeratorInput(body) {
+  const phone = String(body?.phone || '').trim();
+  const label = body?.label ? String(body.label).trim().slice(0, 150) : null;
+  const digitsOnly = phone.replace(/\D/g, '');
+  if (!digitsOnly || digitsOnly.length < 8 || digitsOnly.length > 20) return null;
+  return { phone, label };
+}
+
 export const adminHtml = `<!doctype html>
 <html lang="fr">
 <head>
@@ -98,6 +106,7 @@ export const adminHtml = `<!doctype html>
     <button id="tab-btn-agencies" type="button">🏢 Agences interdites</button>
     <button id="tab-btn-donations" type="button" class="secondary">💰 Dons & Cagnottes</button>
     <button id="tab-btn-ads" type="button" class="secondary">📢 Pubs & Placements</button>
+    <button id="tab-btn-mods" type="button" class="secondary">🛡️ Modérateurs & Exemptés</button>
   </div>
 
   <div id="panel-agencies">
@@ -136,21 +145,35 @@ export const adminHtml = `<!doctype html>
     </div>
   </div>
 
+  <div id="panel-mods" hidden>
+    <p class="muted"><strong>Exclusion du contrôle doublons :</strong> les numéros listés ici (modérateurs, bénévoles, comptes de secours) ne seront jamais exclus ni bloqués s'ils rejoignent plusieurs groupes, et ne figureront pas dans le rapport des doublons.</p>
+    <div style="display:flex;gap:8px;max-width:650px;margin-bottom:12px;flex-wrap:wrap">
+      <input id="new-mod-phone" type="text" placeholder="Numéro de téléphone (ex: +33 6 12 34 56 78 ou 06...)" style="flex:2;min-width:200px">
+      <input id="new-mod-label" type="text" placeholder="Nom ou rôle (ex: Yahia - Coordinateur)" style="flex:2;min-width:180px">
+      <button id="add-mod" style="flex:1">Ajouter</button>
+    </div>
+    <input id="search-mod" type="text" placeholder="Filtrer les modérateurs..." style="max-width:320px;margin-bottom:10px">
+    <div style="max-height:300px;overflow:auto;border:1px solid #dbe4e1;border-radius:8px">
+      <table><thead><tr><th>Numéro</th><th>Nom / Rôle</th><th>Ajouté le</th><th>Action</th></tr></thead><tbody id="mods"></tbody></table>
+    </div>
+  </div>
+
   <h2>Récapitulatif quotidien</h2><p class="muted">Génération locale à 20 h 10. Le brouillon consolidé doit être validé dans Groupe_admin avec GO RECAP &lt;CODE&gt;.</p><label for="recap-signature">Signature ajoutée en fin de récapitulatif</label><textarea id="recap-signature" maxlength="600" placeholder="Signature à définir ultérieurement"></textarea><button id="save-recap">Enregistrer la signature</button>
   <h2>Ouverture et fermeture automatiques</h2><p class="muted">Jours : 1=lundi … 7=dimanche. À la fermeture, le message est envoyé avant le verrouillage. À l’ouverture, le groupe est déverrouillé avant le message.</p><div style="overflow:auto"><table><thead><tr><th>Groupe</th><th>Activé</th><th>Jours</th><th>Ouverture</th><th>Fermeture</th><th>Message d’ouverture</th><th>Message de clôture</th><th></th></tr></thead><tbody id="schedules"></tbody></table></div></section>
 </main><script>
 const fields=['enabled','isTest','isMonitored','isAdmin','allowAutoReply','allowBroadcast','allowRecap'];
 const labels={enabled:'Actif',isTest:'Test',isMonitored:'Surveillance',isAdmin:'Admin',allowAutoReply:'Réponse auto',allowBroadcast:'Diffusion',allowRecap:'Récapitulatif'};
 const tokenInput=document.getElementById('token'), login=document.getElementById('login'), panel=document.getElementById('panel'), statusBox=document.getElementById('status'), tbody=document.getElementById('groups'), scheduleBody=document.getElementById('schedules');
-const tabAgenciesBtn=document.getElementById('tab-btn-agencies'), tabDonationsBtn=document.getElementById('tab-btn-donations'), tabAdsBtn=document.getElementById('tab-btn-ads');
-const panelAgencies=document.getElementById('panel-agencies'), panelDonations=document.getElementById('panel-donations'), panelAds=document.getElementById('panel-ads');
+const tabAgenciesBtn=document.getElementById('tab-btn-agencies'), tabDonationsBtn=document.getElementById('tab-btn-donations'), tabAdsBtn=document.getElementById('tab-btn-ads'), tabModsBtn=document.getElementById('tab-btn-mods');
+const panelAgencies=document.getElementById('panel-agencies'), panelDonations=document.getElementById('panel-donations'), panelAds=document.getElementById('panel-ads'), panelMods=document.getElementById('panel-mods');
 const agencyBody=document.getElementById('agencies'), agencyInput=document.getElementById('new-agency'), agencySearch=document.getElementById('search-agency');
 const donationBody=document.getElementById('donations'), donationInput=document.getElementById('new-donation-term'), donationSearch=document.getElementById('search-donation');
 const adBody=document.getElementById('ads'), adInput=document.getElementById('new-ad-term'), adSearch=document.getElementById('search-ad');
+const modBody=document.getElementById('mods'), modPhoneInput=document.getElementById('new-mod-phone'), modLabelInput=document.getElementById('new-mod-label'), modSearch=document.getElementById('search-mod');
 let token=sessionStorage.getItem('xhatsapp_admin_token')||'';
-let allAgencies=[], allKeywords=[];
+let allAgencies=[], allKeywords=[], allModerators=[];
 
-const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.'};
+const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.','invalid_moderator_phone':'Numéro de téléphone invalide (au moins 8 chiffres requis).'};
 function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'};}
 function status(text,error=false){statusBox.textContent=text;statusBox.className='status '+(error?'error':'ok');}
 async function api(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(response.status===401){logout();throw new Error('Jeton refusé');}const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(errLabels[data.error]||data.error||('HTTP '+response.status));return data;}
@@ -159,13 +182,16 @@ function selectTab(tab){
   tabAgenciesBtn.className=tab==='agencies'?'':'secondary';
   tabDonationsBtn.className=tab==='donations'?'':'secondary';
   tabAdsBtn.className=tab==='ads'?'':'secondary';
+  tabModsBtn.className=tab==='mods'?'':'secondary';
   panelAgencies.hidden=tab!=='agencies';
   panelDonations.hidden=tab!=='donations';
   panelAds.hidden=tab!=='ads';
+  panelMods.hidden=tab!=='mods';
 }
 tabAgenciesBtn.onclick=()=>selectTab('agencies');
 tabDonationsBtn.onclick=()=>selectTab('donations');
 tabAdsBtn.onclick=()=>selectTab('ads');
+tabModsBtn.onclick=()=>selectTab('mods');
 
 function checkbox(group,key){const cell=document.createElement('td');cell.dataset.label=labels[key];const input=document.createElement('input');input.type='checkbox';input.checked=group[key];input.dataset.key=key;cell.appendChild(input);return cell;}
 function render(groups){tbody.replaceChildren();for(const group of groups){const row=document.createElement('tr');row.dataset.id=group.id;const name=document.createElement('td');name.className='name';name.dataset.label='Groupe';name.textContent=group.name;row.appendChild(name);const ref=document.createElement('td');ref.dataset.label='Référence';ref.textContent=group.reference;row.appendChild(ref);for(const key of fields)row.appendChild(checkbox(group,key));const action=document.createElement('td');const save=document.createElement('button');save.textContent='Enregistrer';save.onclick=()=>saveRow(row);action.appendChild(save);row.appendChild(action);tbody.appendChild(row);}}
@@ -208,6 +234,25 @@ function renderKeywords(category, targetTbody, searchInput){
   }
 }
 
+function renderModerators(items){
+  modBody.replaceChildren();
+  const filter=modSearch.value.trim().toLowerCase();
+  const filtered=items.filter(m=>(m.phone||'').toLowerCase().includes(filter)||(m.label||'').toLowerCase().includes(filter));
+  for(const mod of filtered){
+    const row=document.createElement('tr');
+    const phone=document.createElement('td');phone.textContent=mod.phone;
+    const label=document.createElement('td');label.textContent=mod.label||'-';
+    const date=document.createElement('td');date.textContent=mod.created_at?new Date(mod.created_at).toLocaleDateString('fr-FR'):'-';
+    const action=document.createElement('td');
+    const delBtn=document.createElement('button');delBtn.className='danger';delBtn.textContent='Supprimer';
+    delBtn.onclick=async()=>{
+      if(!confirm('Retirer le numéro « '+(mod.label?mod.label+' ('+mod.phone+')':mod.phone)+' » de la liste des modérateurs exemptés ?'))return;
+      try{await api('/admin/api/moderators/'+encodeURIComponent(mod.id),{method:'DELETE'});status('Modérateur '+mod.phone+' supprimé');await loadModerators();}catch(err){status(err.message,true);}
+    };
+    action.appendChild(delBtn);row.append(phone,label,date,action);modBody.appendChild(row);
+  }
+}
+
 async function loadAgencies(){try{const data=await api('/admin/api/agencies');allAgencies=data.agencies||[];renderAgencies(allAgencies);}catch(err){console.error(err);}}
 async function loadKeywords(){
   try{
@@ -217,14 +262,21 @@ async function loadKeywords(){
     renderKeywords('advertising', adBody, adSearch);
   }catch(err){console.error(err);}
 }
+async function loadModerators(){
+  try{
+    const data=await api('/admin/api/moderators');
+    allModerators=data.moderators||[];
+    renderModerators(allModerators);
+  }catch(err){console.error(err);}
+}
 
 async function load(){
   const [groups,schedules,recap]=await Promise.all([api('/admin/api/groups'),api('/admin/api/schedules'),api('/admin/api/recap-settings')]);
   render(groups.groups);
   renderSchedules(schedules.schedules);
   document.getElementById('recap-signature').value=recap.settings.signature||'';
-  await Promise.all([loadAgencies(), loadKeywords()]);
-  status(groups.groups.length+' groupe(s), '+allAgencies.length+' agence(s), '+allKeywords.length+' mot(s)-clé(s) chargé(s)');
+  await Promise.all([loadAgencies(), loadKeywords(), loadModerators()]);
+  status(groups.groups.length+' groupe(s), '+allAgencies.length+' agence(s), '+allKeywords.length+' mot(s)-clé(s), '+allModerators.length+' modérateur(s) chargé(s)');
 }
 
 async function saveRow(row){const body={};for(const input of row.querySelectorAll('input[data-key]'))body[input.dataset.key]=input.checked;if(body.allowAutoReply||body.allowBroadcast||body.allowRecap){if(!confirm('Confirmer les autorisations automatiques sélectionnées pour ce groupe ?'))return;body.confirm=true;}try{await api('/admin/api/groups/'+encodeURIComponent(row.dataset.id),{method:'PUT',body:JSON.stringify(body)});status('Configuration enregistrée');await load();}catch(error){status(error.message,true);}}
@@ -234,6 +286,7 @@ async function checkRights(row){if(!confirm('Vérifier les droits administrateur
 agencySearch.oninput=()=>renderAgencies(allAgencies);
 donationSearch.oninput=()=>renderKeywords('donation', donationBody, donationSearch);
 adSearch.oninput=()=>renderKeywords('advertising', adBody, adSearch);
+modSearch.oninput=()=>renderModerators(allModerators);
 
 document.getElementById('add-agency').onclick=async()=>{
   const name=agencyInput.value.trim();if(!name)return;
@@ -248,6 +301,19 @@ document.getElementById('add-donation-term').onclick=async()=>{
 document.getElementById('add-ad-term').onclick=async()=>{
   const term=adInput.value.trim();if(!term)return;
   try{await api('/admin/api/keywords',{method:'POST',body:JSON.stringify({category:'advertising',term})});adInput.value='';status('Mot-clé pub/placement « '+term+' » ajouté');await loadKeywords();}catch(err){status(err.message,true);}
+};
+
+document.getElementById('add-mod').onclick=async()=>{
+  const phone=modPhoneInput.value.trim();
+  const label=modLabelInput.value.trim();
+  if(!phone)return;
+  try{
+    await api('/admin/api/moderators',{method:'POST',body:JSON.stringify({phone,label})});
+    modPhoneInput.value='';
+    modLabelInput.value='';
+    status('Modérateur « '+(label?label+' ('+phone+')':phone)+' » ajouté');
+    await loadModerators();
+  }catch(err){status(err.message,true);}
 };
 
 async function connect(){token=tokenInput.value.trim();sessionStorage.setItem('xhatsapp_admin_token',token);login.hidden=true;panel.hidden=false;try{await load();}catch(error){status(error.message,true);}}

@@ -1,5 +1,6 @@
 import express from 'express';
 import {
+  addExemptModerator,
   addForbiddenAgency,
   addModerationKeyword,
   checkDatabase,
@@ -7,6 +8,7 @@ import {
   claimBroadcastDraft,
   createBroadcastDraft,
   createModerationAlert,
+  deleteExemptModerator,
   deleteForbiddenAgency,
   deleteModerationKeyword,
   finalizeBroadcastDraft,
@@ -14,6 +16,7 @@ import {
   getAdminTarget,
   getGroupPolicy,
   getPendingModerationAlert,
+  listExemptModerators,
   listForbiddenAgencies,
   listGroupPolicies,
   listBroadcastDrafts,
@@ -59,7 +62,7 @@ import {
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
 import { verifyOpenWaSignature } from './security.js';
-import { adminAuth, adminHtml, parseAgency, parseKeyword, parsePolicy, readGroupInventory } from './admin.js';
+import { adminAuth, adminHtml, parseAgency, parseKeyword, parseModeratorInput, parsePolicy, readGroupInventory } from './admin.js';
 import {
   buildModerationAlert,
   createAlertCode,
@@ -93,10 +96,12 @@ import {
   buildDuplicateRefusalDm,
   buildFlashMessage,
   buildLockNotice,
+  buildModeratorsListMessage,
   buildOnboardingDm,
   buildPanicAlert,
   buildUnlockNotice,
   detectPanic,
+  isPhoneExempt,
   parseCommunityCommand,
 } from './community.js';
 
@@ -178,6 +183,19 @@ async function reloadModerationKeywords() {
     });
   } catch (error) {
     console.warn('Moderation keywords cache reload failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
+let exemptModeratorsCache = [];
+
+async function reloadExemptModerators() {
+  try {
+    exemptModeratorsCache = await listExemptModerators();
+    console.log('Exempt moderators cache reloaded', { count: exemptModeratorsCache.length });
+  } catch (error) {
+    console.warn('Exempt moderators cache reload failed', {
       error: error instanceof Error ? error.message : 'unknown_error',
     });
   }
@@ -627,6 +645,13 @@ async function handleCommunityCommand(message, command) {
     return { handled: true, status: 'flash_broadcasted' };
   }
 
+  if (command.type === 'list_moderators') {
+    const list = await listExemptModerators().catch(() => exemptModeratorsCache);
+    const text = buildModeratorsListMessage(list);
+    await openWa.sendText(message.chatId, text).catch(() => {});
+    return { handled: true, status: 'moderators_listed' };
+  }
+
   if (command.type === 'audit_doublons') {
     const allGroups = await listGroupPolicies();
     const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
@@ -649,7 +674,7 @@ async function handleCommunityCommand(message, command) {
       }
     }
 
-    const audit = auditDuplicates(groupsWithParticipants);
+    const audit = auditDuplicates(groupsWithParticipants, exemptModeratorsCache);
     const report = buildDuplicateAuditReport(audit);
     await openWa.sendText(message.chatId, report).catch(() => {});
     return { handled: true, status: 'audit_completed' };
@@ -708,8 +733,12 @@ async function handleGroupJoinEvent(payload) {
       (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
     );
 
-    if (currentParticipant?.isAdmin || currentParticipant?.isSuperAdmin) {
-      console.log('Group join: participant is admin/moderator, exempted from checks', {
+    if (
+      currentParticipant?.isAdmin ||
+      currentParticipant?.isSuperAdmin ||
+      isPhoneExempt(participantId, exemptModeratorsCache)
+    ) {
+      console.log('Group join: participant is admin/moderator/exempt, exempted from checks', {
         participant_ref: safeReference(participantId),
       });
       continue;
@@ -721,6 +750,9 @@ async function handleGroupJoinEvent(payload) {
         (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
       );
       if (found) {
+        if (found.isAdmin || found.isSuperAdmin || isPhoneExempt(found.id || found.number, exemptModeratorsCache)) {
+          continue;
+        }
         existingGroup = otherInfo.group;
         break;
       }
@@ -1079,6 +1111,47 @@ app.delete('/admin/api/keywords/:id', async (request, response) => {
   }
 });
 
+app.get('/admin/api/moderators', async (_request, response) => {
+  try {
+    response.json({ ok: true, moderators: await listExemptModerators() });
+  } catch {
+    response.status(500).json({ ok: false, error: 'moderators_list_failed' });
+  }
+});
+
+app.post('/admin/api/moderators', async (request, response) => {
+  const parsed = parseModeratorInput(request.body);
+  if (!parsed) {
+    response.status(400).json({ ok: false, error: 'invalid_moderator_phone' });
+    return;
+  }
+  try {
+    const moderator = await addExemptModerator(parsed.phone, parsed.label);
+    await reloadExemptModerators();
+    response.json({ ok: true, moderator });
+  } catch (error) {
+    console.error('Failed to add exempt moderator', {
+      phone: parsed.phone,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    response.status(500).json({ ok: false, error: 'moderator_add_failed' });
+  }
+});
+
+app.delete('/admin/api/moderators/:id', async (request, response) => {
+  try {
+    const deleted = await deleteExemptModerator(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ ok: false, error: 'moderator_not_found' });
+      return;
+    }
+    await reloadExemptModerators();
+    response.json({ ok: true, deleted: true });
+  } catch {
+    response.status(500).json({ ok: false, error: 'moderator_delete_failed' });
+  }
+});
+
 app.get('/admin/api/broadcasts', async (request, response) => {
   try {
     response.json({ ok: true, drafts: await listBroadcastDrafts(request.query.limit) });
@@ -1257,6 +1330,14 @@ try {
   await reloadModerationKeywords();
 } catch (error) {
   console.warn('Moderation keywords initialization failed', {
+    error: error instanceof Error ? error.message : 'unknown_error',
+  });
+}
+
+try {
+  await reloadExemptModerators();
+} catch (error) {
+  console.warn('Exempt moderators initialization failed', {
     error: error instanceof Error ? error.message : 'unknown_error',
   });
 }

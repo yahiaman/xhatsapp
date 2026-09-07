@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseAgency, parseKeyword, parsePolicy, validAdminToken } from '../src/admin.js';
+import { parseAgency, parseKeyword, parseModeratorInput, parsePolicy, validAdminToken } from '../src/admin.js';
 
 const completePolicy = {
   enabled: true,
@@ -52,4 +52,19 @@ test('parses and validates keyword input', () => {
   assert.equal(parseKeyword({ category: 'donation', term: '   ' }), null);
   assert.equal(parseKeyword({ category: 'donation', term: 'A'.repeat(151) }), null);
   assert.equal(parseKeyword(null), null);
+});
+
+test('parses and validates moderator input', () => {
+  assert.deepEqual(parseModeratorInput({ phone: ' +33 6 12 34 56 78 ', label: '  Yahia Coordinateur  ' }), {
+    phone: '+33 6 12 34 56 78',
+    label: 'Yahia Coordinateur',
+  });
+  assert.deepEqual(parseModeratorInput({ phone: '0612345678' }), {
+    phone: '0612345678',
+    label: null,
+  });
+  assert.equal(parseModeratorInput({ phone: '123' }), null); // too short
+  assert.equal(parseModeratorInput({ phone: '' }), null);
+  assert.equal(parseModeratorInput({ phone: 'invalid text' }), null);
+  assert.equal(parseModeratorInput(null), null);
 });

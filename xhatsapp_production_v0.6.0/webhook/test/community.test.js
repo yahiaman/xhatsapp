@@ -181,3 +181,58 @@ test('audits duplicates across groups while strictly excluding admins', () => {
   const cleanReport = buildDuplicateAuditReport(emptyAudit);
   assert.ok(cleanReport.includes('Aucun membre en doublon'));
 });
+
+test('normalizes phone numbers and checks exempt moderator status', async () => {
+  const { normalizePhoneNumber, isPhoneExempt, buildModeratorsListMessage } = await import('../src/community.js');
+
+  assert.equal(normalizePhoneNumber('06 12 34 56 78'), '33612345678');
+  assert.equal(normalizePhoneNumber('+33 6 12 34 56 78'), '33612345678');
+  assert.equal(normalizePhoneNumber('07 88 99 00 11'), '33788990011');
+  assert.equal(normalizePhoneNumber('966501234567'), '966501234567');
+
+  const exemptList = [
+    { phone: '06 12 34 56 78', normalized_phone: '33612345678', label: 'Modérateur Yahia' },
+    { phone: '+966 50 123 4567', normalized_phone: '966501234567', label: 'Guide Médine' },
+  ];
+
+  assert.equal(isPhoneExempt('33612345678@c.us', exemptList), true);
+  assert.equal(isPhoneExempt('0612345678', exemptList), true);
+  assert.equal(isPhoneExempt('+33612345678', exemptList), true);
+  assert.equal(isPhoneExempt('966501234567@c.us', exemptList), true);
+  assert.equal(isPhoneExempt('33699999999@c.us', exemptList), false);
+  assert.equal(isPhoneExempt(null, exemptList), false);
+  assert.equal(isPhoneExempt('33612345678', []), false);
+
+  // Check auditDuplicates ignores exempt moderators even if present in multiple groups
+  const mockGroups = [
+    {
+      id: 'g1@g.us',
+      name: 'Groupe_01',
+      participants: [
+        { id: '33612345678@c.us', number: '33612345678', isAdmin: false, isSuperAdmin: false },
+        { id: 'user_dup@c.us', number: '33688888888', isAdmin: false, isSuperAdmin: false },
+      ],
+    },
+    {
+      id: 'g2@g.us',
+      name: 'Groupe_02',
+      participants: [
+        { id: '33612345678@c.us', number: '33612345678', isAdmin: false, isSuperAdmin: false },
+        { id: 'user_dup@c.us', number: '33688888888', isAdmin: false, isSuperAdmin: false },
+      ],
+    },
+  ];
+
+  const audit = auditDuplicates(mockGroups, exemptList);
+  assert.equal(audit.duplicatesCount, 1);
+  assert.equal(audit.duplicates[0].phone, '33688888888');
+
+  // Check message formatting
+  const msgEmpty = buildModeratorsListMessage([]);
+  assert.ok(msgEmpty.includes('Aucun modérateur n’est enregistré'));
+
+  const msgList = buildModeratorsListMessage(exemptList);
+  assert.ok(msgList.includes('Total enregistrés : 2'));
+  assert.ok(msgList.includes('Modérateur Yahia'));
+  assert.ok(msgList.includes('06 12 34 56 78'));
+});

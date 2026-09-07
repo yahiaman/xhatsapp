@@ -310,6 +310,41 @@ export async function deleteModerationKeyword(id) {
   return result.rows[0] || null;
 }
 
+export async function listExemptModerators() {
+  const result = await pool.query(
+    `SELECT id, phone, normalized_phone, label, created_at
+     FROM exempt_moderators
+     ORDER BY lower(coalesce(label, phone)) ASC`,
+  );
+  return result.rows;
+}
+
+export async function addExemptModerator(phone, label) {
+  const cleanPhone = String(phone || '').trim();
+  const digitsOnly = cleanPhone.replace(/\D/g, '');
+  let normalized = digitsOnly;
+  if (/^0[1-9]\d{8}$/.test(digitsOnly)) {
+    normalized = `33${digitsOnly.slice(1)}`;
+  }
+  const cleanLabel = label ? String(label).trim().slice(0, 150) : null;
+  const result = await pool.query(
+    `INSERT INTO exempt_moderators (phone, normalized_phone, label)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (phone) DO UPDATE SET normalized_phone = EXCLUDED.normalized_phone, label = EXCLUDED.label
+     RETURNING id, phone, normalized_phone, label, created_at`,
+    [cleanPhone, normalized, cleanLabel],
+  );
+  return result.rows[0];
+}
+
+export async function deleteExemptModerator(id) {
+  const result = await pool.query(
+    `DELETE FROM exempt_moderators WHERE id = $1 RETURNING id, phone, label`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
 export async function markModerationAlertNotified(alertId, adminMessageId) {
   await pool.query(
     `UPDATE moderation_alerts
