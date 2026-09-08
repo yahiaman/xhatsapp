@@ -176,11 +176,19 @@ export function buildDuplicateAdminAlert({
   newGroupName,
   existingGroupName,
   isRequest = false,
+  dmSent = false,
 }) {
   const member = senderPhone ? `+${senderPhone} (${senderReference})` : senderReference;
-  const actionText = isRequest
-    ? 'Demande d’adhésion automatiquement rejetée + MP explicatif envoyé.'
-    : 'Membre automatiquement exclu du second groupe + MP explicatif envoyé.';
+  let actionText;
+  if (isRequest) {
+    actionText = dmSent
+      ? 'Demande d’adhésion automatiquement rejetée + MP explicatif envoyé.'
+      : 'Demande d’adhésion automatiquement rejetée (mode anti-ban : aucun MP envoyé).';
+  } else {
+    actionText = dmSent
+      ? 'Membre automatiquement exclu du second groupe + MP explicatif envoyé.'
+      : 'Membre automatiquement exclu du second groupe (mode anti-ban : aucun MP envoyé).';
+  }
   return [
     '🛡️ *PROTECTION MULTI-GROUPES (DOUBLON REFUSÉ)*',
     `👤 *Membre :* ${member}`,

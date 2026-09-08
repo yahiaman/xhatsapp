@@ -123,6 +123,7 @@ const summaryProvider = process.env.SUMMARY_PROVIDER || 'omniroute';
 const summaryBaseUrl = process.env.SUMMARY_API_URL || 'http://omniroute:20128/v1';
 const summaryApiKey = process.env.SUMMARY_API_KEY || '';
 const summaryModel = process.env.SUMMARY_MODEL || 'pending';
+const enableUnsolicitedPrivateDms = process.env.ENABLE_UNSOLICITED_PRIVATE_DMS === 'true';
 
 if (!webhookSecret) throw new Error('OPENWA_WEBHOOK_SECRET is required');
 if (!adminToken) throw new Error('XHATSAPP_ADMIN_TOKEN is required');
@@ -824,18 +825,24 @@ async function handleGroupJoinEvent(payload) {
         });
       }
 
-      const refusalDm = buildDuplicateRefusalDm(
-        groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
-        existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
-        communityTemplatesCache.duplicate_refusal_dm,
-      );
-      try {
-        await openWa.sendText(directChatId, refusalDm);
-        console.log('Duplicate refusal DM sent', { target: directChatId });
-      } catch (error) {
-        console.error('Failed to send duplicate refusal DM', {
-          participant_ref: safeReference(participantId),
-          error: safeOperationalError(error),
+      if (enableUnsolicitedPrivateDms) {
+        const refusalDm = buildDuplicateRefusalDm(
+          groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+          existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+          communityTemplatesCache.duplicate_refusal_dm,
+        );
+        try {
+          await openWa.sendText(directChatId, refusalDm);
+          console.log('Duplicate refusal DM sent', { target: directChatId });
+        } catch (error) {
+          console.error('Failed to send duplicate refusal DM', {
+            participant_ref: safeReference(participantId),
+            error: safeOperationalError(error),
+          });
+        }
+      } else {
+        console.log('Duplicate refusal DM skipped (anti-ban safe mode: private DMs disabled)', {
+          target: safeReference(participantId),
         });
       }
 
@@ -845,23 +852,31 @@ async function handleGroupJoinEvent(payload) {
           senderReference: safeReference(participantId),
           newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+          dmSent: enableUnsolicitedPrivateDms,
         });
         await openWa.sendText(adminTarget.chat_id, adminAlert).catch(() => {});
       }
     } else {
-      console.log('Group join: first-time participant, sending onboarding DM', {
-        participant_ref: safeReference(participantId),
-        direct_chat_id: directChatId,
-        group: groupPolicy.name,
-      });
-      const onboardingDm = buildOnboardingDm(communityTemplatesCache.onboarding_dm);
-      try {
-        await openWa.sendText(directChatId, onboardingDm);
-        console.log('Onboarding DM sent successfully', { target: directChatId });
-      } catch (error) {
-        console.error('Failed to send onboarding DM', {
+      if (enableUnsolicitedPrivateDms) {
+        console.log('Group join: first-time participant, sending onboarding DM', {
           participant_ref: safeReference(participantId),
-          error: safeOperationalError(error),
+          direct_chat_id: directChatId,
+          group: groupPolicy.name,
+        });
+        const onboardingDm = buildOnboardingDm(communityTemplatesCache.onboarding_dm);
+        try {
+          await openWa.sendText(directChatId, onboardingDm);
+          console.log('Onboarding DM sent successfully', { target: directChatId });
+        } catch (error) {
+          console.error('Failed to send onboarding DM', {
+            participant_ref: safeReference(participantId),
+            error: safeOperationalError(error),
+          });
+        }
+      } else {
+        console.log('Group join: first-time participant, onboarding DM skipped (anti-ban safe mode: private DMs disabled)', {
+          participant_ref: safeReference(participantId),
+          group: groupPolicy.name,
         });
       }
     }
@@ -976,18 +991,24 @@ async function handleGroupJoinRequestEvent(payload) {
         });
       }
 
-      const refusalDm = buildDuplicateRefusalDm(
-        groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
-        existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
-        communityTemplatesCache.duplicate_refusal_dm,
-      );
-      try {
-        await openWa.sendText(directChatId, refusalDm);
-        console.log('Duplicate refusal DM sent for join request', { target: directChatId });
-      } catch (error) {
-        console.error('Failed to send duplicate refusal DM', {
-          participant_ref: safeReference(participantId),
-          error: safeOperationalError(error),
+      if (enableUnsolicitedPrivateDms) {
+        const refusalDm = buildDuplicateRefusalDm(
+          groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+          existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
+          communityTemplatesCache.duplicate_refusal_dm,
+        );
+        try {
+          await openWa.sendText(directChatId, refusalDm);
+          console.log('Duplicate refusal DM sent for join request', { target: directChatId });
+        } catch (error) {
+          console.error('Failed to send duplicate refusal DM', {
+            participant_ref: safeReference(participantId),
+            error: safeOperationalError(error),
+          });
+        }
+      } else {
+        console.log('Duplicate refusal DM skipped for join request (anti-ban safe mode: private DMs disabled)', {
+          target: safeReference(participantId),
         });
       }
 
@@ -998,6 +1019,7 @@ async function handleGroupJoinRequestEvent(payload) {
           newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
           isRequest: true,
+          dmSent: enableUnsolicitedPrivateDms,
         });
         await openWa.sendText(adminTarget.chat_id, adminAlert).catch(() => {});
       }
