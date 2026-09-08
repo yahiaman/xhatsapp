@@ -7,20 +7,41 @@ CREATE TABLE IF NOT EXISTS community_templates (
 
 INSERT INTO community_templates (id, content, description)
 VALUES 
-  ('onboarding_dm', 'Assalamu alaykum wa rahmatullah chère sœur / cher frère,
+  ('onboarding_dm', 'Assalāmu ‘alaykum wa rahmatullāhi wa barakātuh
 
-Bienvenue dans la communauté d’entraide *Nusuk Hajj 1447 / 2026* 🕋 !
+chère sœur, cher frère,
 
-Afin de préserver la sérénité et l’utilité de nos échanges, voici les *règles d’or* à respecter :
-1️⃣ *Neutralité absolue* : Aucune citation, recommandation ou critique d’agence de voyage n’est autorisée.
-2️⃣ *Aucune publicité ni collecte* : Pas de vente de services, pas de liens de cagnottes, de dons ou de parrainage.
-3️⃣ *Fraternité & Sérénité* : Respect strict entre pèlerins, aucune polémique ni propagation de rumeurs non vérifiées.
-4️⃣ *Fermeture nocturne* : Les échanges sont automatiquement mis en pause chaque soir de 23h00 à 07h00.
-5️⃣ *Récapitulatif quotidien* : Chaque soir à 20h10, un résumé complet des informations clés vous est partagé.
+Bienvenue au sein de la communauté Entraide Nusuk Hajj 1448 / 2027 🕋
 
-📌 *Rappel important* : Tous nos groupes partagent strictement les mêmes informations. Votre présence dans *un seul groupe* est largement suffisante et permet de laisser la place à d’autres pèlerins.
+Nous sommes heureux de vous accueillir dans cet espace créé pour permettre aux futurs pèlerins de s’informer, de s’entraider et d’avancer ensemble dans leurs démarches.
 
-Qu’Allah facilite vos démarches et accepte votre pèlerinage ! 🤲', 'Message de bienvenue envoyé en privé lors de l''intégration dans un groupe'),
+Afin que nos échanges restent utiles, respectueux et sereins, nous vous demandons simplement de respecter quelques règles essentielles :
+
+🫥 Nous restons totalement neutres
+Aucune recommandation, critique ou citation d’agence de voyage n’est autorisée dans les groupes.
+
+📢 Aucune publicité ni collecte 
+
+La vente de services, les cagnottes, les appels aux dons, les parrainages et les liens promotionnels ne sont pas acceptés.
+
+🤍 Respect, fraternité et bienveillance
+Chacun avance à son rythme. Les polémiques, les jugements et les informations non vérifiées n’ont pas leur place ici.
+
+⏸️ Une pause pendant la nuit
+Pour respecter le repos de chacun, les échanges sont suspendus tous les soirs de 23h00 à 9h00.
+
+📝 Un récapitulatif chaque soir à 20h10, 
+ nous partageons un résumé des informations importantes de la journée afin que personne ne manque l’essentiel.
+
+📌Petit rappel : les mêmes informations sont diffusées dans tous nos groupes. Il est donc inutile d’en rejoindre plusieurs : votre présence dans un seul groupe suffit et permet de laisser une place aux autres futurs pèlerins.
+
+Prenez le temps de lire les messages épinglés et n’hésitez pas à participer aux échanges lorsque le groupe est ouvert. L’équipe ENH reste présente, dans la mesure de ses possibilités, pour vous aider à mieux comprendre vos démarches.
+
+Qu’Allah vous facilite chaque étape, mette la baraka dans votre préparation et vous accorde un Hajj accepté. 🤲🏻
+
+L’équipe Entraide Nusuk Hajj 
+Au service du Pèlerin 
+Fi Sabilillah', 'Message de bienvenue envoyé en privé lors de l''intégration dans un groupe'),
 
   ('duplicate_refusal_dm', 'Assalamu alaykum wa rahmatullah chère sœur / cher frère,
 
