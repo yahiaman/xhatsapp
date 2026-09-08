@@ -123,7 +123,7 @@ const summaryProvider = process.env.SUMMARY_PROVIDER || 'omniroute';
 const summaryBaseUrl = process.env.SUMMARY_API_URL || 'http://omniroute:20128/v1';
 const summaryApiKey = process.env.SUMMARY_API_KEY || '';
 const summaryModel = process.env.SUMMARY_MODEL || 'pending';
-const enableUnsolicitedPrivateDms = process.env.ENABLE_UNSOLICITED_PRIVATE_DMS === 'true';
+const enableUnsolicitedPrivateDms = process.env.ENABLE_UNSOLICITED_PRIVATE_DMS !== 'false';
 
 if (!webhookSecret) throw new Error('OPENWA_WEBHOOK_SECRET is required');
 if (!adminToken) throw new Error('XHATSAPP_ADMIN_TOKEN is required');
