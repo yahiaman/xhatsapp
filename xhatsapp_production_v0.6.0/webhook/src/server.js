@@ -590,12 +590,16 @@ async function generateDailyRecap(localDate, settings) {
 async function handleCommunityCommand(message, command) {
   if (command.type === 'block_all') {
     const allGroups = await listGroupPolicies();
-    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
     let lockedCount = 0;
     for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
       try {
-        await openWa.updateGroupSettings(group.chat_id, { announce: true });
-        await openWa.sendText(group.chat_id, buildLockNotice()).catch(() => {});
+        await openWa.updateGroupSettings(chatId, { announce: true });
+        await openWa.sendText(chatId, buildLockNotice()).catch(() => {});
         lockedCount += 1;
       } catch (error) {
         console.error('Failed to lock group', { group: group.name, error: safeOperationalError(error) });
@@ -610,12 +614,16 @@ async function handleCommunityCommand(message, command) {
 
   if (command.type === 'unblock_all') {
     const allGroups = await listGroupPolicies();
-    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
     let unlockedCount = 0;
     for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
       try {
-        await openWa.updateGroupSettings(group.chat_id, { announce: false });
-        await openWa.sendText(group.chat_id, buildUnlockNotice()).catch(() => {});
+        await openWa.updateGroupSettings(chatId, { announce: false });
+        await openWa.sendText(chatId, buildUnlockNotice()).catch(() => {});
         unlockedCount += 1;
       } catch (error) {
         console.error('Failed to unlock group', { group: group.name, error: safeOperationalError(error) });
@@ -625,7 +633,7 @@ async function handleCommunityCommand(message, command) {
       message.chatId,
       `🔓 *TOUS LES GROUPES ONT ÉTÉ DÉVERROUILLÉS*\n\n${unlockedCount}/${monitoredGroups.length} groupe(s) surveillé(s) sont de nouveau ouverts à tous les membres.`,
     ).catch(() => {});
-    return { handled: true, status: 'all_unblocked' };
+    return { handled: true, status: 'all_unlocked' };
   }
 
   if (command.type === 'flash') {
@@ -638,11 +646,15 @@ async function handleCommunityCommand(message, command) {
     }
 
     const allGroups = await listGroupPolicies();
-    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
 
     // 1. Verrouillage préalable de sécurité
     for (const group of monitoredGroups) {
-      await openWa.updateGroupSettings(group.chat_id, { announce: true }).catch(() => {});
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
+      await openWa.updateGroupSettings(chatId, { announce: true }).catch(() => {});
     }
 
     // 2. Diffusion du flash
@@ -650,8 +662,10 @@ async function handleCommunityCommand(message, command) {
     let sentCount = 0;
     for (let index = 0; index < monitoredGroups.length; index += 1) {
       const group = monitoredGroups[index];
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
       try {
-        await openWa.sendText(group.chat_id, flashBody);
+        await openWa.sendText(chatId, flashBody);
         sentCount += 1;
       } catch (error) {
         console.error('Failed to broadcast flash to group', { group: group.name, error: safeOperationalError(error) });
@@ -677,7 +691,9 @@ async function handleCommunityCommand(message, command) {
 
   if (command.type === 'audit_doublons') {
     const allGroups = await listGroupPolicies();
-    const monitoredGroups = allGroups.filter((g) => g.enabled && g.is_monitored);
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
     await openWa.sendText(
       message.chatId,
       `🔍 Audit des membres en cours sur ${monitoredGroups.length} groupe(s)...`,
@@ -685,11 +701,13 @@ async function handleCommunityCommand(message, command) {
 
     const groupsWithParticipants = [];
     for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
       try {
-        const groupInfo = await openWa.getGroup(group.chat_id);
+        const groupInfo = await openWa.getGroup(chatId);
         groupsWithParticipants.push({
-          id: group.chat_id,
-          name: group.name || group.inventory_ref || group.chat_id,
+          id: chatId,
+          name: group.name || group.inventory_ref || chatId,
           participants: groupInfo?.participants || [],
         });
       } catch (error) {
@@ -704,6 +722,75 @@ async function handleCommunityCommand(message, command) {
   }
 
   return { handled: false, reason: 'unknown_community_command' };
+}
+
+async function resolveParticipantDetails(openWaClient, participantId) {
+  let resolvedChatId = null;
+  let phoneNumber = null;
+  let pushName = null;
+
+  if (typeof participantId === 'string' && participantId.includes('@lid')) {
+    try {
+      const contact = await openWaClient.getContact(participantId);
+      if (contact?.id && contact.id.endsWith('@c.us')) {
+        resolvedChatId = contact.id;
+        phoneNumber = contact.id.replace('@c.us', '');
+      }
+      if (contact?.pushName) {
+        pushName = contact.pushName;
+      }
+    } catch {
+      // ignore resolution error
+    }
+  }
+
+  if (!resolvedChatId && typeof participantId === 'string') {
+    if (participantId.endsWith('@c.us')) {
+      resolvedChatId = participantId;
+      phoneNumber = participantId.replace('@c.us', '');
+    } else {
+      const rawDigits = participantId.replace(/\D/g, '');
+      if (rawDigits.length >= 8 && !participantId.includes('@lid')) {
+        resolvedChatId = `${rawDigits}@c.us`;
+        phoneNumber = rawDigits;
+      }
+    }
+  }
+
+  return {
+    rawId: participantId,
+    chatId: resolvedChatId,
+    phone: phoneNumber,
+    pushName,
+  };
+}
+
+function participantMatches(p, resolved) {
+  if (!p) return false;
+  const pId = typeof p === 'string' ? p : p.id;
+  const pNumber = typeof p === 'object' && p.number ? p.number.replace(/\D/g, '') : null;
+  const pIdDigits = pId ? pId.split('@')[0].replace(/\D/g, '') : null;
+
+  if (pId && resolved.rawId && pId === resolved.rawId) return true;
+  if (pId && resolved.chatId && pId === resolved.chatId) return true;
+  if (resolved.phone) {
+    if (pNumber && (pNumber === resolved.phone || pNumber.endsWith(resolved.phone) || resolved.phone.endsWith(pNumber))) return true;
+    if (pIdDigits && !pId.includes('@lid') && (pIdDigits === resolved.phone || pIdDigits.endsWith(resolved.phone) || resolved.phone.endsWith(pIdDigits))) return true;
+  }
+  return false;
+}
+
+function requestMatches(req, resolved) {
+  if (!req) return false;
+  const reqId = req.participantId || req.id;
+  if (!reqId) return false;
+  if (resolved.rawId && reqId === resolved.rawId) return true;
+  if (resolved.chatId && reqId === resolved.chatId) return true;
+  if (resolved.phone) {
+    const reqDigits = reqId.split('@')[0].replace(/\D/g, '');
+    if (!reqId.includes('@lid') && (reqDigits === resolved.phone || reqDigits.endsWith(resolved.phone) || resolved.phone.endsWith(reqDigits))) return true;
+  }
+  return false;
 }
 
 async function handleGroupJoinEvent(payload) {
@@ -726,29 +813,32 @@ async function handleGroupJoinEvent(payload) {
   }
 
   const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
-  if (!groupPolicy || !groupPolicy.enabled || !groupPolicy.is_monitored) {
+  if (!groupPolicy || !(groupPolicy.enabled ?? false) || !(groupPolicy.is_monitored || groupPolicy.isMonitored)) {
     console.log('Group join event ignored: group not monitored or disabled', {
       group_id: groupId,
       enabled: groupPolicy?.enabled,
-      monitored: groupPolicy?.is_monitored,
+      monitored: groupPolicy?.is_monitored || groupPolicy?.isMonitored,
     });
     return { ignored: true, reason: 'group_not_monitored' };
   }
 
   const allGroups = await listGroupPolicies();
   const otherMonitoredGroups = allGroups.filter(
-    (g) => g.enabled && g.is_monitored && g.chat_id !== groupId,
+    (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin) && (g.chat_id || g.chatId) !== groupId,
   );
 
   const adminTarget = await getAdminTarget().catch(() => null);
 
   const otherGroupsInfo = [];
   for (const other of otherMonitoredGroups) {
+    const otherChatId = other.chat_id || other.chatId;
+    if (!otherChatId) continue;
     try {
-      const info = await openWa.getGroup(other.chat_id);
+      const info = await openWa.getGroup(otherChatId);
       if (info && Array.isArray(info.participants)) {
         otherGroupsInfo.push({
           group: other,
+          chatId: otherChatId,
           participants: info.participants,
         });
       }
@@ -760,29 +850,15 @@ async function handleGroupJoinEvent(payload) {
     }
   }
 
-  let currentGroupInfo = null;
-  try {
-    currentGroupInfo = await openWa.getGroup(groupId);
-  } catch (error) {
-    console.warn('Could not inspect current group info', { error: safeOperationalError(error) });
-  }
-
   for (const participantId of participantIds) {
-    const rawDigits = participantId.replace(/\D/g, '');
-    const currentParticipant = currentGroupInfo?.participants?.find(
-      (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
-    );
-
-    const directChatId = (currentParticipant?.number ? `${currentParticipant.number}@c.us` : null)
-      || (participantId.includes('@c.us') ? participantId : null)
-      || currentParticipant?.id
-      || participantId;
+    const resolved = await resolveParticipantDetails(openWa, participantId);
+    const directChatId = resolved.chatId;
+    const phone = resolved.phone;
 
     if (
-      currentParticipant?.isAdmin ||
-      currentParticipant?.isSuperAdmin ||
       isPhoneExempt(participantId, exemptModeratorsCache) ||
-      (rawDigits && isPhoneExempt(rawDigits, exemptModeratorsCache))
+      (phone && isPhoneExempt(phone, exemptModeratorsCache)) ||
+      (directChatId && isPhoneExempt(directChatId, exemptModeratorsCache))
     ) {
       console.log('Group join: participant is admin/moderator/exempt, exempted from checks', {
         participant_ref: safeReference(participantId),
@@ -792,17 +868,12 @@ async function handleGroupJoinEvent(payload) {
 
     let existingGroup = null;
     for (const otherInfo of otherGroupsInfo) {
-      const found = otherInfo.participants.find(
-        (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
-      );
+      const found = otherInfo.participants.find((p) => {
+        if (p.isAdmin || p.isSuperAdmin) return false;
+        return participantMatches(p, resolved);
+      });
       if (found) {
-        if (
-          found.isAdmin ||
-          found.isSuperAdmin ||
-          isPhoneExempt(found.id || found.number, exemptModeratorsCache)
-        ) {
-          continue;
-        }
+        if (isPhoneExempt(found.id || found.number, exemptModeratorsCache)) continue;
         existingGroup = otherInfo.group;
         break;
       }
@@ -811,6 +882,7 @@ async function handleGroupJoinEvent(payload) {
     if (existingGroup) {
       console.log('Group join: duplicate participant detected, kicking from new group', {
         participant_ref: safeReference(participantId),
+        resolved_phone: phone ? `+${phone}` : 'unknown',
         direct_chat_id: directChatId,
         new_group: groupPolicy.name,
         existing_group: existingGroup.name,
@@ -825,7 +897,7 @@ async function handleGroupJoinEvent(payload) {
         });
       }
 
-      if (enableUnsolicitedPrivateDms) {
+      if (enableUnsolicitedPrivateDms && directChatId) {
         const refusalDm = buildDuplicateRefusalDm(
           groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
@@ -841,28 +913,30 @@ async function handleGroupJoinEvent(payload) {
           });
         }
       } else {
-        console.log('Duplicate refusal DM skipped (anti-ban safe mode: private DMs disabled)', {
+        console.log('Duplicate refusal DM skipped (anti-ban safe mode or missing directChatId)', {
           target: safeReference(participantId),
+          direct_chat_id: directChatId,
         });
       }
 
       if (adminTarget) {
         const adminAlert = buildDuplicateAdminAlert({
-          senderPhone: rawDigits || currentParticipant?.number || participantId,
+          senderPhone: phone,
           senderReference: safeReference(participantId),
           newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
-          dmSent: enableUnsolicitedPrivateDms,
+          dmSent: enableUnsolicitedPrivateDms && Boolean(directChatId),
         });
         await openWa.sendText(adminTarget.chat_id, adminAlert).catch(() => {});
       }
     } else {
-      if (enableUnsolicitedPrivateDms) {
-        console.log('Group join: first-time participant, sending onboarding DM', {
-          participant_ref: safeReference(participantId),
-          direct_chat_id: directChatId,
-          group: groupPolicy.name,
-        });
+      console.log('Group join: first-time participant, processing welcome', {
+        participant_ref: safeReference(participantId),
+        resolved_phone: phone ? `+${phone}` : 'unknown',
+        direct_chat_id: directChatId,
+        group: groupPolicy.name,
+      });
+      if (enableUnsolicitedPrivateDms && directChatId) {
         const onboardingDm = buildOnboardingDm(communityTemplatesCache.onboarding_dm);
         try {
           await openWa.sendText(directChatId, onboardingDm);
@@ -870,12 +944,14 @@ async function handleGroupJoinEvent(payload) {
         } catch (error) {
           console.error('Failed to send onboarding DM', {
             participant_ref: safeReference(participantId),
+            target: directChatId,
             error: safeOperationalError(error),
           });
         }
       } else {
-        console.log('Group join: first-time participant, onboarding DM skipped (anti-ban safe mode: private DMs disabled)', {
+        console.log('Group join: onboarding DM skipped (anti-ban safe mode or missing directChatId)', {
           participant_ref: safeReference(participantId),
+          direct_chat_id: directChatId,
           group: groupPolicy.name,
         });
       }
@@ -905,32 +981,37 @@ async function handleGroupJoinRequestEvent(payload) {
   }
 
   const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
-  if (!groupPolicy || !groupPolicy.enabled || !groupPolicy.is_monitored) {
+  if (!groupPolicy || !(groupPolicy.enabled ?? false) || !(groupPolicy.is_monitored || groupPolicy.isMonitored)) {
     console.log('Group join request event ignored: group not monitored or disabled', {
       group_id: groupId,
       enabled: groupPolicy?.enabled,
-      monitored: groupPolicy?.is_monitored,
+      monitored: groupPolicy?.is_monitored || groupPolicy?.isMonitored,
     });
     return { ignored: true, reason: 'group_not_monitored' };
   }
 
   const allGroups = await listGroupPolicies();
   const otherMonitoredGroups = allGroups.filter(
-    (g) => g.enabled && g.is_monitored && g.chat_id !== groupId,
+    (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin) && (g.chat_id || g.chatId) !== groupId,
   );
 
   const adminTarget = await getAdminTarget().catch(() => null);
 
   const otherGroupsInfo = [];
   for (const other of otherMonitoredGroups) {
+    const otherChatId = other.chat_id || other.chatId;
+    if (!otherChatId) continue;
     try {
-      const info = await openWa.getGroup(other.chat_id);
-      if (info && Array.isArray(info.participants)) {
-        otherGroupsInfo.push({
-          group: other,
-          participants: info.participants,
-        });
-      }
+      const [groupInfo, membershipRequests] = await Promise.all([
+        openWa.getGroup(otherChatId).catch(() => null),
+        openWa.getMembershipRequests(otherChatId).catch(() => []),
+      ]);
+      otherGroupsInfo.push({
+        group: other,
+        chatId: otherChatId,
+        participants: Array.isArray(groupInfo?.participants) ? groupInfo.participants : [],
+        membershipRequests: Array.isArray(membershipRequests) ? membershipRequests : [],
+      });
     } catch (error) {
       console.warn('Could not inspect other group members for duplicate join request check', {
         other_group: other.name,
@@ -940,14 +1021,14 @@ async function handleGroupJoinRequestEvent(payload) {
   }
 
   for (const participantId of participantIds) {
-    const rawDigits = participantId.replace(/\D/g, '');
-    const directChatId = (rawDigits ? `${rawDigits}@c.us` : null)
-      || (participantId.includes('@c.us') ? participantId : null)
-      || participantId;
+    const resolved = await resolveParticipantDetails(openWa, participantId);
+    const directChatId = resolved.chatId;
+    const phone = resolved.phone;
 
     if (
       isPhoneExempt(participantId, exemptModeratorsCache) ||
-      (rawDigits && isPhoneExempt(rawDigits, exemptModeratorsCache))
+      (phone && isPhoneExempt(phone, exemptModeratorsCache)) ||
+      (directChatId && isPhoneExempt(directChatId, exemptModeratorsCache))
     ) {
       console.log('Group join request: participant is exempt/moderator, leaving for admin manual review', {
         participant_ref: safeReference(participantId),
@@ -956,19 +1037,27 @@ async function handleGroupJoinRequestEvent(payload) {
     }
 
     let existingGroup = null;
+    let duplicateReason = null;
+
     for (const otherInfo of otherGroupsInfo) {
-      const found = otherInfo.participants.find(
-        (p) => p.id === participantId || (rawDigits && p.number === rawDigits),
-      );
-      if (found) {
-        if (
-          found.isAdmin ||
-          found.isSuperAdmin ||
-          isPhoneExempt(found.id || found.number, exemptModeratorsCache)
-        ) {
-          continue;
-        }
+      // 1. Check if already active member in other group
+      const activeMember = otherInfo.participants.find((p) => {
+        if (p.isAdmin || p.isSuperAdmin) return false;
+        return participantMatches(p, resolved);
+      });
+
+      if (activeMember) {
+        if (isPhoneExempt(activeMember.id || activeMember.number, exemptModeratorsCache)) continue;
         existingGroup = otherInfo.group;
+        duplicateReason = 'already_member';
+        break;
+      }
+
+      // 2. Check if already has a pending membership request in other group
+      const pendingRequest = otherInfo.membershipRequests.find((req) => requestMatches(req, resolved));
+      if (pendingRequest) {
+        existingGroup = otherInfo.group;
+        duplicateReason = 'pending_request';
         break;
       }
     }
@@ -976,9 +1065,11 @@ async function handleGroupJoinRequestEvent(payload) {
     if (existingGroup) {
       console.log('Group join request: duplicate requester detected, rejecting request', {
         participant_ref: safeReference(participantId),
+        resolved_phone: phone ? `+${phone}` : 'unknown',
         direct_chat_id: directChatId,
         new_group: groupPolicy.name,
         existing_group: existingGroup.name,
+        reason: duplicateReason,
       });
 
       try {
@@ -991,7 +1082,7 @@ async function handleGroupJoinRequestEvent(payload) {
         });
       }
 
-      if (enableUnsolicitedPrivateDms) {
+      if (enableUnsolicitedPrivateDms && directChatId) {
         const refusalDm = buildDuplicateRefusalDm(
           groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
@@ -1007,25 +1098,27 @@ async function handleGroupJoinRequestEvent(payload) {
           });
         }
       } else {
-        console.log('Duplicate refusal DM skipped for join request (anti-ban safe mode: private DMs disabled)', {
+        console.log('Duplicate refusal DM skipped for join request (anti-ban safe mode or missing directChatId)', {
           target: safeReference(participantId),
+          direct_chat_id: directChatId,
         });
       }
 
       if (adminTarget) {
         const adminAlert = buildDuplicateAdminAlert({
-          senderPhone: rawDigits || participantId,
+          senderPhone: phone,
           senderReference: safeReference(participantId),
           newGroupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
           existingGroupName: existingGroup.name || existingGroup.inventory_ref || 'Groupe existant',
           isRequest: true,
-          dmSent: enableUnsolicitedPrivateDms,
+          dmSent: enableUnsolicitedPrivateDms && Boolean(directChatId),
         });
         await openWa.sendText(adminTarget.chat_id, adminAlert).catch(() => {});
       }
     } else {
       console.log('Group join request: legitimate new applicant, awaiting admin manual approval', {
         participant_ref: safeReference(participantId),
+        resolved_phone: phone ? `+${phone}` : 'unknown',
         group: groupPolicy.name,
       });
     }

@@ -23,13 +23,24 @@ export async function checkDatabase() {
 
 export async function getGroupPolicy(chatId) {
   const result = await pool.query(
-    `SELECT id, name, inventory_ref, enabled, is_test, is_admin, is_monitored,
+    `SELECT id, chat_id, name, inventory_ref, enabled, is_test, is_admin, is_monitored,
             allow_auto_reply, allow_broadcast, allow_recap
      FROM whatsapp_groups
      WHERE chat_id = $1`,
     [chatId],
   );
-  return result.rows[0] || null;
+  if (!result.rows[0]) return null;
+  const row = result.rows[0];
+  return {
+    ...row,
+    chatId: row.chat_id,
+    isMonitored: row.is_monitored,
+    isAdmin: row.is_admin,
+    isTest: row.is_test,
+    allowBroadcast: row.allow_broadcast,
+    allowAutoReply: row.allow_auto_reply,
+    allowRecap: row.allow_recap,
+  };
 }
 
 export async function getAdminTarget() {
@@ -104,7 +115,17 @@ export async function listGroupPolicies() {
      FROM whatsapp_groups
      ORDER BY lower(COALESCE(name, '')), inventory_ref`,
   );
-  return result.rows.map(publicGroup);
+  return result.rows.map((row) => ({
+    ...publicGroup(row),
+    chat_id: row.chat_id,
+    chatId: row.chat_id,
+    is_monitored: row.is_monitored,
+    is_admin: row.is_admin,
+    is_test: row.is_test,
+    allow_broadcast: row.allow_broadcast,
+    allow_auto_reply: row.allow_auto_reply,
+    allow_recap: row.allow_recap,
+  }));
 }
 
 export async function updateGroupPolicy(groupId, policy) {

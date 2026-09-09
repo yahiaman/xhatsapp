@@ -133,3 +133,21 @@ test('retrieves and rejects membership requests with encoded group ids', async (
   assert.deepEqual(JSON.parse(calls[1].options.body), { participants: ['req1@c.us'] });
 });
 
+test('retrieves contact info with encoded contact id', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  let capturedUrl;
+  globalThis.fetch = async (url) => {
+    capturedUrl = url;
+    return new Response(JSON.stringify({ id: '33712345678@c.us', pushName: 'Test' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 's', apiKey: 'k' });
+  const contact = await client.getContact('129270110248993@lid');
+  assert.equal(capturedUrl, 'http://openwa:2785/api/sessions/s/contacts/129270110248993%40lid');
+  assert.equal(contact.id, '33712345678@c.us');
+  assert.equal(contact.pushName, 'Test');
+});
+
+

@@ -102,5 +102,12 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
         },
       );
     },
+    getContact(contactId) {
+      return request(
+        'get_contact',
+        'GET',
+        `/contacts/${encodeURIComponent(contactId)}`,
+      );
+    },
   };
 }
