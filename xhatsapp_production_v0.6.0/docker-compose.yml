@@ -178,7 +178,7 @@ services:
       SUMMARY_API_URL: ${SUMMARY_API_URL:-http://omniroute:20128/v1}
       SUMMARY_API_KEY: ${SUMMARY_API_KEY}
       SUMMARY_MODEL: ${SUMMARY_MODEL}
-      ENABLE_UNSOLICITED_PRIVATE_DMS: ${ENABLE_UNSOLICITED_PRIVATE_DMS:-true}
+      ENABLE_UNSOLICITED_PRIVATE_DMS: ${ENABLE_UNSOLICITED_PRIVATE_DMS:-false}
     volumes:
       - ./config/openwa-groups.json:/config/openwa-groups.json:ro
     ports:
