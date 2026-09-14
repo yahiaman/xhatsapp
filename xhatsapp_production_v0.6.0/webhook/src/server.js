@@ -71,7 +71,7 @@ import {
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
 import { verifyOpenWaSignature } from './security.js';
-import { adminAuth, adminHtml, parseAgency, parseKeyword, parseModeratorInput, parsePolicy, parseTemplateInput, readGroupInventory } from './admin.js';
+import { adminAuth, adminHtml, parseAgency, parseBanInput, parseKeyword, parseModeratorInput, parsePolicy, parseResourceInput, parseTemplateInput, readGroupInventory } from './admin.js';
 import {
   buildModerationAlert,
   createAlertCode,
@@ -2020,6 +2020,144 @@ app.put('/admin/api/templates/:id', async (request, response) => {
     response.json({ ok: true, template });
   } catch {
     response.status(500).json({ ok: false, error: 'template_update_failed' });
+  }
+});
+
+app.get('/admin/api/blacklist', async (_request, response) => {
+  try {
+    const list = await listBannedMembers().catch(() => bannedMembersCache);
+    response.json({ ok: true, banned: list });
+  } catch {
+    response.status(500).json({ ok: false, error: 'blacklist_list_failed' });
+  }
+});
+
+app.post('/admin/api/blacklist', async (request, response) => {
+  const parsed = parseBanInput(request.body);
+  if (!parsed) {
+    response.status(400).json({ ok: false, error: 'invalid_ban_phone' });
+    return;
+  }
+  const rawTarget = parsed.phone;
+  const targetDigits = String(rawTarget).replace(/\D/g, '');
+  const normalizedTarget = normalizePhoneNumber(targetDigits);
+
+  if (
+    isPhoneExempt(rawTarget, exemptModeratorsCache) ||
+    isPhoneExempt(normalizedTarget, exemptModeratorsCache)
+  ) {
+    response.status(400).json({ ok: false, error: 'exempt_moderator_cannot_be_banned' });
+    return;
+  }
+
+  try {
+    const banned = await addBannedMember(rawTarget, parsed.reason, 'web_admin');
+    await reloadBannedMembers();
+
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
+
+    const kickedFromGroups = [];
+    for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
+      try {
+        const groupInfo = await openWa.getGroup(chatId).catch(() => null);
+        const participant = groupInfo?.participants?.find((p) => {
+          const pPhone = p.number ? p.number.replace(/\D/g, '') : p.id?.split('@')[0].replace(/\D/g, '');
+          const pNorm = normalizePhoneNumber(pPhone);
+          return (
+            pPhone === targetDigits ||
+            pNorm === normalizedTarget ||
+            (normalizedTarget.length >= 9 && pNorm.endsWith(normalizedTarget)) ||
+            (pNorm.length >= 9 && normalizedTarget.endsWith(pNorm))
+          );
+        });
+
+        if (participant) {
+          await openWa.removeParticipants(chatId, [participant.id]);
+          kickedFromGroups.push(group.name || group.inventory_ref || chatId);
+          console.log('Banned member kicked from group via web admin', { group: group.name, participant: participant.id });
+        }
+
+        const requests = await openWa.getMembershipRequests(chatId).catch(() => []);
+        const matchingReq = requests.find((req) => {
+          const rPhone = req.id?.split('@')[0].replace(/\D/g, '');
+          const rNorm = normalizePhoneNumber(rPhone);
+          return (
+            rPhone === targetDigits ||
+            rNorm === normalizedTarget ||
+            (normalizedTarget.length >= 9 && rNorm.endsWith(normalizedTarget)) ||
+            (rNorm.length >= 9 && normalizedTarget.endsWith(rNorm))
+          );
+        });
+        if (matchingReq) {
+          await openWa.rejectMembershipRequests(chatId, [matchingReq.id]);
+          console.log('Banned member pending request rejected via web admin', { group: group.name, req: matchingReq.id });
+        }
+      } catch (error) {
+        console.error('Failed to kick banned member from group via web admin', { group: group.name, error: safeOperationalError(error) });
+      }
+    }
+
+    response.json({ ok: true, banned, kickedGroups: kickedFromGroups });
+  } catch (error) {
+    console.error('Failed to add banned member via web admin', {
+      phone: rawTarget,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    response.status(500).json({ ok: false, error: 'ban_add_failed' });
+  }
+});
+
+app.delete('/admin/api/blacklist/:phone', async (request, response) => {
+  try {
+    const deleted = await deleteBannedMember(request.params.phone);
+    if (!deleted) {
+      response.status(404).json({ ok: false, error: 'banned_member_not_found' });
+      return;
+    }
+    await reloadBannedMembers();
+    response.json({ ok: true, deleted: true });
+  } catch {
+    response.status(500).json({ ok: false, error: 'banned_member_delete_failed' });
+  }
+});
+
+app.get('/admin/api/resources', async (_request, response) => {
+  try {
+    const resources = await listCommunityResources().catch(() => communityResourcesCache);
+    response.json({ ok: true, resources });
+  } catch {
+    response.status(500).json({ ok: false, error: 'resources_list_failed' });
+  }
+});
+
+app.put('/admin/api/resources/:id', async (request, response) => {
+  const parsed = parseResourceInput(request.body);
+  if (!parsed) {
+    response.status(400).json({ ok: false, error: 'invalid_resource_url' });
+    return;
+  }
+  try {
+    const existing = await getCommunityResource(request.params.id);
+    const updated = await upsertCommunityResource(request.params.id, {
+      title: parsed.title || existing?.title || request.params.id,
+      url: parsed.url,
+      description: parsed.description || existing?.description || '',
+      keywords: parsed.keywords || existing?.keywords || [],
+    });
+    await reloadCommunityResources();
+    console.log('Community resource updated via web admin', { id: request.params.id, url: parsed.url });
+    response.json({ ok: true, resource: updated });
+  } catch (error) {
+    console.error('Failed to update community resource via web admin', {
+      id: request.params.id,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    response.status(500).json({ ok: false, error: 'resource_update_failed' });
   }
 });
 

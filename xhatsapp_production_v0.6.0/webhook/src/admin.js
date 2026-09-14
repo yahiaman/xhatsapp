@@ -84,6 +84,25 @@ export function parseTemplateInput(body) {
   return { content };
 }
 
+export function parseBanInput(body) {
+  const phone = String(body?.phone || '').trim();
+  const reason = body?.reason ? String(body.reason).trim().slice(0, 500) : null;
+  const digitsOnly = phone.replace(/\D/g, '');
+  if (!digitsOnly || digitsOnly.length < 6 || digitsOnly.length > 25) return null;
+  return { phone, reason };
+}
+
+export function parseResourceInput(body) {
+  const url = String(body?.url || '').trim();
+  if (!url || !/^https?:\/\/.+/i.test(url)) return null;
+  const title = body?.title ? String(body.title).trim().slice(0, 100) : null;
+  const description = body?.description ? String(body.description).trim().slice(0, 500) : null;
+  const keywords = Array.isArray(body?.keywords)
+    ? body.keywords.map((k) => String(k).trim()).filter(Boolean)
+    : null;
+  return { url, title, description, keywords };
+}
+
 export const adminHtml = `<!doctype html>
 <html lang="fr">
 <head>
@@ -113,6 +132,8 @@ export const adminHtml = `<!doctype html>
     <button id="tab-btn-donations" type="button" class="secondary">💰 Dons & Cagnottes</button>
     <button id="tab-btn-ads" type="button" class="secondary">📢 Pubs & Placements</button>
     <button id="tab-btn-mods" type="button" class="secondary">🛡️ Modérateurs & Exemptés</button>
+    <button id="tab-btn-blacklist" type="button" class="secondary">🚫 Liste Noire (Bannis)</button>
+    <button id="tab-btn-resources" type="button" class="secondary">🔗 Liens & Ressources</button>
   </div>
 
   <div id="panel-agencies">
@@ -164,6 +185,29 @@ export const adminHtml = `<!doctype html>
     </div>
   </div>
 
+  <div id="panel-blacklist" hidden>
+    <p class="muted"><strong>Bannissement multi-groupes :</strong> les numéros listés ici sont définitivement exclus de tous les groupes surveillés. Toute tentative future de rejoindre nos groupes sera automatiquement rejetée sur WhatsApp.</p>
+    <div style="display:flex;gap:8px;max-width:650px;margin-bottom:12px;flex-wrap:wrap">
+      <input id="new-ban-phone" type="text" placeholder="Numéro à bannir (ex: +33 6 12 34 56 78 ou 06...)" style="flex:2;min-width:200px">
+      <input id="new-ban-reason" type="text" placeholder="Motif du ban (ex: Publicité abusive, arnaque...)" style="flex:2;min-width:180px">
+      <button id="add-ban" class="danger" style="flex:1">Bannir</button>
+    </div>
+    <input id="search-ban" type="text" placeholder="Filtrer les membres bannis..." style="max-width:320px;margin-bottom:10px">
+    <div style="max-height:300px;overflow:auto;border:1px solid #dbe4e1;border-radius:8px">
+      <table><thead><tr><th>Numéro</th><th>Motif</th><th>Banni par</th><th>Date</th><th>Action</th></tr></thead><tbody id="blacklist"></tbody></table>
+    </div>
+  </div>
+
+  <div id="panel-resources" hidden>
+    <p class="muted"><strong>Ressources & Liens officiels Nusuk :</strong> ces liens sont partagés automatiquement dans les groupes surveillés dès qu'un administrateur/modérateur mentionne la ressource (ou tape !youtube, !site, !faq, !hotels, !packages). Modifiez l'URL de votre choix ci-dessous :</p>
+    <div style="overflow:auto;border:1px solid #dbe4e1;border-radius:8px">
+      <table>
+        <thead><tr><th>Ressource</th><th>Titre & Description</th><th>URL officielle</th><th>Action</th></tr></thead>
+        <tbody id="resources"></tbody>
+      </table>
+    </div>
+  </div>
+
   <h2>Messages automatiques de la communauté</h2>
   <p class="muted">Messages personnalisés envoyés automatiquement en message privé (DM) sur WhatsApp aux pèlerins.</p>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:18px">
@@ -186,15 +230,19 @@ const fields=['enabled','isTest','isMonitored','isAdmin','allowAutoReply','allow
 const labels={enabled:'Actif',isTest:'Test',isMonitored:'Surveillance',isAdmin:'Admin',allowAutoReply:'Réponse auto',allowBroadcast:'Diffusion',allowRecap:'Récapitulatif'};
 const tokenInput=document.getElementById('token'), login=document.getElementById('login'), panel=document.getElementById('panel'), statusBox=document.getElementById('status'), tbody=document.getElementById('groups'), scheduleBody=document.getElementById('schedules');
 const tabAgenciesBtn=document.getElementById('tab-btn-agencies'), tabDonationsBtn=document.getElementById('tab-btn-donations'), tabAdsBtn=document.getElementById('tab-btn-ads'), tabModsBtn=document.getElementById('tab-btn-mods');
+const tabBlacklistBtn=document.getElementById('tab-btn-blacklist'), tabResourcesBtn=document.getElementById('tab-btn-resources');
 const panelAgencies=document.getElementById('panel-agencies'), panelDonations=document.getElementById('panel-donations'), panelAds=document.getElementById('panel-ads'), panelMods=document.getElementById('panel-mods');
+const panelBlacklist=document.getElementById('panel-blacklist'), panelResources=document.getElementById('panel-resources');
 const agencyBody=document.getElementById('agencies'), agencyInput=document.getElementById('new-agency'), agencySearch=document.getElementById('search-agency');
 const donationBody=document.getElementById('donations'), donationInput=document.getElementById('new-donation-term'), donationSearch=document.getElementById('search-donation');
 const adBody=document.getElementById('ads'), adInput=document.getElementById('new-ad-term'), adSearch=document.getElementById('search-ad');
 const modBody=document.getElementById('mods'), modPhoneInput=document.getElementById('new-mod-phone'), modLabelInput=document.getElementById('new-mod-label'), modSearch=document.getElementById('search-mod');
+const blacklistBody=document.getElementById('blacklist'), banPhoneInput=document.getElementById('new-ban-phone'), banReasonInput=document.getElementById('new-ban-reason'), banSearch=document.getElementById('search-ban');
+const resourceBody=document.getElementById('resources');
 let token=sessionStorage.getItem('xhatsapp_admin_token')||'';
-let allAgencies=[], allKeywords=[], allModerators=[];
+let allAgencies=[], allKeywords=[], allModerators=[], allBanned=[], allResources=[];
 
-const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.','invalid_moderator_phone':'Numéro de téléphone invalide (au moins 8 chiffres requis).'};
+const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.','invalid_moderator_phone':'Numéro de téléphone invalide (au moins 8 chiffres requis).','invalid_ban_phone':'Numéro de téléphone invalide (au moins 6 chiffres requis).','ban_add_failed':'Échec de l’enregistrement du bannissement.','exempt_moderator_cannot_be_banned':'Ce numéro figure dans la liste des modérateurs / exemptés et ne peut pas être banni.','invalid_resource_url':'URL invalide (doit commencer par http:// ou https://).','resource_update_failed':'Échec de la mise à jour de la ressource.'};
 function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'};}
 function status(text,error=false){statusBox.textContent=text;statusBox.className='status '+(error?'error':'ok');}
 async function api(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(response.status===401){logout();throw new Error('Jeton refusé');}const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(errLabels[data.error]||data.error||('HTTP '+response.status));return data;}
@@ -204,15 +252,21 @@ function selectTab(tab){
   tabDonationsBtn.className=tab==='donations'?'':'secondary';
   tabAdsBtn.className=tab==='ads'?'':'secondary';
   tabModsBtn.className=tab==='mods'?'':'secondary';
+  tabBlacklistBtn.className=tab==='blacklist'?'':'secondary';
+  tabResourcesBtn.className=tab==='resources'?'':'secondary';
   panelAgencies.hidden=tab!=='agencies';
   panelDonations.hidden=tab!=='donations';
   panelAds.hidden=tab!=='ads';
   panelMods.hidden=tab!=='mods';
+  panelBlacklist.hidden=tab!=='blacklist';
+  panelResources.hidden=tab!=='resources';
 }
 tabAgenciesBtn.onclick=()=>selectTab('agencies');
 tabDonationsBtn.onclick=()=>selectTab('donations');
 tabAdsBtn.onclick=()=>selectTab('ads');
 tabModsBtn.onclick=()=>selectTab('mods');
+tabBlacklistBtn.onclick=()=>selectTab('blacklist');
+tabResourcesBtn.onclick=()=>selectTab('resources');
 
 function checkbox(group,key){const cell=document.createElement('td');cell.dataset.label=labels[key];const input=document.createElement('input');input.type='checkbox';input.checked=group[key];input.dataset.key=key;cell.appendChild(input);return cell;}
 function render(groups){tbody.replaceChildren();for(const group of groups){const row=document.createElement('tr');row.dataset.id=group.id;const name=document.createElement('td');name.className='name';name.dataset.label='Groupe';name.textContent=group.name;row.appendChild(name);const ref=document.createElement('td');ref.dataset.label='Référence';ref.textContent=group.reference;row.appendChild(ref);for(const key of fields)row.appendChild(checkbox(group,key));const action=document.createElement('td');const save=document.createElement('button');save.textContent='Enregistrer';save.onclick=()=>saveRow(row);action.appendChild(save);row.appendChild(action);tbody.appendChild(row);}}
@@ -303,13 +357,90 @@ async function loadTemplates(){
   }catch(err){console.error(err);}
 }
 
+function renderBlacklist(items){
+  blacklistBody.replaceChildren();
+  const filter=banSearch.value.trim().toLowerCase();
+  const filtered=items.filter(b=>(b.phone||'').toLowerCase().includes(filter)||(b.normalized_phone||'').toLowerCase().includes(filter)||(b.reason||'').toLowerCase().includes(filter));
+  for(const item of filtered){
+    const row=document.createElement('tr');
+    const phone=document.createElement('td');phone.textContent=item.phone+(item.normalized_phone&&item.normalized_phone!==item.phone?' (+'+item.normalized_phone+')':'');
+    const reason=document.createElement('td');reason.textContent=item.reason||'-';
+    const by=document.createElement('td');by.textContent=item.banned_by||'admin';
+    const date=document.createElement('td');date.textContent=item.created_at?new Date(item.created_at).toLocaleDateString('fr-FR'):'-';
+    const action=document.createElement('td');
+    const unbanBtn=document.createElement('button');unbanBtn.className='secondary';unbanBtn.textContent='Débannir';
+    unbanBtn.onclick=async()=>{
+      if(!confirm('Débannir le numéro « '+item.phone+' » et lui permettre à nouveau de rejoindre les groupes ?'))return;
+      try{
+        await api('/admin/api/blacklist/'+encodeURIComponent(item.phone),{method:'DELETE'});
+        status('Numéro '+item.phone+' débanni avec succès');
+        await loadBlacklist();
+      }catch(err){status(err.message,true);}
+    };
+    action.appendChild(unbanBtn);
+    row.append(phone,reason,by,date,action);
+    blacklistBody.appendChild(row);
+  }
+}
+
+async function loadBlacklist(){
+  try{
+    const data=await api('/admin/api/blacklist');
+    allBanned=data.banned||[];
+    renderBlacklist(allBanned);
+  }catch(err){console.error(err);}
+}
+
+function renderResources(items){
+  resourceBody.replaceChildren();
+  for(const res of items){
+    const row=document.createElement('tr');
+    const name=document.createElement('td');
+    name.innerHTML='<strong>'+(res.id==='youtube'?'📺 YouTube':res.id==='site'?'🌐 Site Internet':res.id==='faq'?'❓ FAQ':res.id==='hotels'?'🗺️ Hôtels':res.id==='packages'?'📦 Packages':res.id)+'</strong><br><small class="muted">Clé: <code>'+res.id+'</code></small>';
+    const desc=document.createElement('td');
+    desc.innerHTML='<strong>'+(res.title||res.id)+'</strong><br><small class="muted">'+(res.description||'')+'</small>';
+    const urlCell=document.createElement('td');
+    const urlInput=document.createElement('input');
+    urlInput.type='text';
+    urlInput.value=res.url||'';
+    urlInput.style.minWidth='280px';
+    urlCell.appendChild(urlInput);
+    const action=document.createElement('td');
+    const saveBtn=document.createElement('button');
+    saveBtn.textContent='Enregistrer';
+    saveBtn.onclick=async()=>{
+      const newUrl=urlInput.value.trim();
+      if(!newUrl||!/^https?:\/\/.+/i.test(newUrl)){
+        status('L’URL doit être valide et commencer par http:// ou https://',true);
+        return;
+      }
+      try{
+        await api('/admin/api/resources/'+encodeURIComponent(res.id),{method:'PUT',body:JSON.stringify({url:newUrl})});
+        status('Lien pour « '+res.title+' » mis à jour avec succès');
+        await loadResources();
+      }catch(err){status(err.message,true);}
+    };
+    action.appendChild(saveBtn);
+    row.append(name,desc,urlCell,action);
+    resourceBody.appendChild(row);
+  }
+}
+
+async function loadResources(){
+  try{
+    const data=await api('/admin/api/resources');
+    allResources=data.resources||[];
+    renderResources(allResources);
+  }catch(err){console.error(err);}
+}
+
 async function load(){
   const [groups,schedules,recap]=await Promise.all([api('/admin/api/groups'),api('/admin/api/schedules'),api('/admin/api/recap-settings')]);
   render(groups.groups);
   renderSchedules(schedules.schedules);
   document.getElementById('recap-signature').value=recap.settings.signature||'';
-  await Promise.all([loadAgencies(), loadKeywords(), loadModerators(), loadTemplates()]);
-  status(groups.groups.length+' groupe(s), '+allAgencies.length+' agence(s), '+allKeywords.length+' mot(s)-clé(s), '+allModerators.length+' modérateur(s) chargé(s)');
+  await Promise.all([loadAgencies(), loadKeywords(), loadModerators(), loadTemplates(), loadBlacklist(), loadResources()]);
+  status(groups.groups.length+' groupe(s), '+allAgencies.length+' agence(s), '+allKeywords.length+' mot(s)-clé(s), '+allModerators.length+' modérateur(s), '+allBanned.length+' banni(s), '+allResources.length+' lien(s) chargé(s)');
 }
 
 async function saveRow(row){const body={};for(const input of row.querySelectorAll('input[data-key]'))body[input.dataset.key]=input.checked;if(body.allowAutoReply||body.allowBroadcast||body.allowRecap){if(!confirm('Confirmer les autorisations automatiques sélectionnées pour ce groupe ?'))return;body.confirm=true;}try{await api('/admin/api/groups/'+encodeURIComponent(row.dataset.id),{method:'PUT',body:JSON.stringify(body)});status('Configuration enregistrée');await load();}catch(error){status(error.message,true);}}
@@ -320,6 +451,7 @@ agencySearch.oninput=()=>renderAgencies(allAgencies);
 donationSearch.oninput=()=>renderKeywords('donation', donationBody, donationSearch);
 adSearch.oninput=()=>renderKeywords('advertising', adBody, adSearch);
 modSearch.oninput=()=>renderModerators(allModerators);
+banSearch.oninput=()=>renderBlacklist(allBanned);
 
 document.getElementById('add-agency').onclick=async()=>{
   const name=agencyInput.value.trim();if(!name)return;
@@ -346,6 +478,21 @@ document.getElementById('add-mod').onclick=async()=>{
     modLabelInput.value='';
     status('Modérateur « '+(label?label+' ('+phone+')':phone)+' » ajouté');
     await loadModerators();
+  }catch(err){status(err.message,true);}
+};
+
+document.getElementById('add-ban').onclick=async()=>{
+  const phone=banPhoneInput.value.trim();
+  const reason=banReasonInput.value.trim();
+  if(!phone)return;
+  if(!confirm('Bannir définitivement le numéro « '+phone+' » de tous les groupes surveillés et expulser le membre s’il est présent ?'))return;
+  try{
+    const res=await api('/admin/api/blacklist',{method:'POST',body:JSON.stringify({phone,reason})});
+    banPhoneInput.value='';
+    banReasonInput.value='';
+    const kickedMsg=res.kickedGroups&&res.kickedGroups.length?(' (expulsé de '+res.kickedGroups.join(', ')+')'):'';
+    status('Numéro « '+phone+' » banni'+kickedMsg);
+    await loadBlacklist();
   }catch(err){status(err.message,true);}
 };
 

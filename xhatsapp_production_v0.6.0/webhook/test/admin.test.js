@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { parseAgency, parseKeyword, parseModeratorInput, parsePolicy, parseTemplateInput, validAdminToken } from '../src/admin.js';
+import { parseAgency, parseBanInput, parseKeyword, parseModeratorInput, parsePolicy, parseResourceInput, parseTemplateInput, validAdminToken } from '../src/admin.js';
 
 const completePolicy = {
   enabled: true,
@@ -78,4 +78,43 @@ test('parses and validates template input', () => {
   assert.equal(parseTemplateInput({}), null);
   assert.equal(parseTemplateInput(null), null);
   assert.equal(parseTemplateInput({ content: 'A'.repeat(4001) }), null);
+});
+
+test('parses and validates ban input', () => {
+  assert.deepEqual(parseBanInput({ phone: ' +33 6 12 34 56 78 ', reason: ' Publicité abusive ' }), {
+    phone: '+33 6 12 34 56 78',
+    reason: 'Publicité abusive',
+  });
+  assert.deepEqual(parseBanInput({ phone: '0612345678' }), {
+    phone: '0612345678',
+    reason: null,
+  });
+  assert.equal(parseBanInput({ phone: '123' }), null);
+  assert.equal(parseBanInput({ phone: '' }), null);
+  assert.equal(parseBanInput({ phone: 'abc' }), null);
+  assert.equal(parseBanInput(null), null);
+});
+
+test('parses and validates resource input', () => {
+  assert.deepEqual(parseResourceInput({
+    url: ' https://youtube.com/@entraidenusuk ',
+    title: ' Chaine YouTube ',
+    description: ' Vidéos tutos ',
+    keywords: ['youtube', 'video'],
+  }), {
+    url: 'https://youtube.com/@entraidenusuk',
+    title: 'Chaine YouTube',
+    description: 'Vidéos tutos',
+    keywords: ['youtube', 'video'],
+  });
+  assert.deepEqual(parseResourceInput({ url: 'http://example.com' }), {
+    url: 'http://example.com',
+    title: null,
+    description: null,
+    keywords: null,
+  });
+  assert.equal(parseResourceInput({ url: 'invalid-url' }), null);
+  assert.equal(parseResourceInput({ url: 'ftp://not-http.com' }), null);
+  assert.equal(parseResourceInput({ url: '' }), null);
+  assert.equal(parseResourceInput(null), null);
 });
