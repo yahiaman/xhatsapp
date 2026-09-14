@@ -419,7 +419,7 @@ function renderResources(items){
     saveBtn.textContent='Enregistrer';
     saveBtn.onclick=async()=>{
       const newUrl=urlInput.value.trim();
-      if(!newUrl||!/^https?:\/\/.+/i.test(newUrl)){
+      if(!newUrl||(!newUrl.startsWith('http://')&&!newUrl.startsWith('https://'))){
         status('L’URL doit être valide et commencer par http:// ou https://',true);
         return;
       }
