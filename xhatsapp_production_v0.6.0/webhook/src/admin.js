@@ -122,7 +122,16 @@ export const adminHtml = `<!doctype html>
 </head>
 <body><main class="wrap">
   <h1>Administration Xhatsapp</h1><p class="muted">Xhatsapp 0.6.0 — modération stricte, diffusion, horaires et récapitulatifs</p>
-  <section class="card" id="login"><label for="token">Jeton administrateur Xhatsapp</label><br><input id="token" type="password" autocomplete="current-password"><button id="connect">Connexion</button></section>
+  <section class="card" id="login">
+    <label for="token"><strong>Jeton administrateur Xhatsapp</strong></label><br>
+    <p class="muted" style="margin:4px 0 10px 0;font-size:0.85rem">Saisissez votre clé <code>XHATSAPP_ADMIN_TOKEN</code> (64 caractères). Vous pouvez aussi utiliser l'option <strong>[5]</strong> du script <code>.\tunnel-xhatsapp.ps1</code> pour la copier directement.</p>
+    <div style="display:flex;gap:8px;align-items:center;max-width:600px;flex-wrap:wrap">
+      <input id="token" type="password" autocomplete="current-password" placeholder="Collez la clé ici..." style="flex:3;min-width:260px">
+      <button type="button" class="secondary" id="toggle-token" style="padding:10px 14px">👁️ Afficher</button>
+      <button id="connect" type="button" style="padding:10px 18px">Connexion</button>
+    </div>
+    <p id="login-error" class="status error" style="display:none;margin-top:12px"></p>
+  </section>
   <section class="card" id="panel" hidden><button id="sync">Actualiser l'inventaire</button><button class="secondary" id="logout">Déconnexion</button><p id="status" class="status">Chargement…</p>
   <h2>Gestion des groupes</h2><div style="overflow:auto"><table><thead><tr><th>Groupe</th><th>Référence</th><th>Actif</th><th>Test</th><th>Surveillance</th><th>Admin</th><th>Réponse auto</th><th>Diffusion</th><th>Récapitulatif</th><th></th></tr></thead><tbody id="groups"></tbody></table></div>
   
@@ -508,9 +517,38 @@ document.getElementById('save-refusal').onclick=async()=>{
   try{await api('/admin/api/templates/duplicate_refusal_dm',{method:'PUT',body:JSON.stringify({content})});status('Message de refus enregistré');}catch(err){status(err.message,true);}
 };
 
-async function connect(){token=tokenInput.value.trim();sessionStorage.setItem('xhatsapp_admin_token',token);login.hidden=true;panel.hidden=false;try{await load();}catch(error){status(error.message,true);}}
-function logout(){token='';sessionStorage.removeItem('xhatsapp_admin_token');tokenInput.value='';login.hidden=false;panel.hidden=true;}
+const loginError=document.getElementById('login-error');
+function showLoginError(msg){loginError.textContent=msg;loginError.style.display='block';}
+function clearLoginError(){loginError.textContent='';loginError.style.display='none';}
+document.getElementById('toggle-token').onclick=()=>{
+  const isPwd=tokenInput.type==='password';
+  tokenInput.type=isPwd?'text':'password';
+  document.getElementById('toggle-token').textContent=isPwd?'🙈 Masquer':'👁️ Afficher';
+};
+tokenInput.onkeydown=(e)=>{if(e.key==='Enter')connect();};
+
+async function connect(){
+  clearLoginError();
+  token=tokenInput.value.trim();
+  if(!token){showLoginError('Veuillez saisir ou coller votre jeton administrateur.');return;}
+  sessionStorage.setItem('xhatsapp_admin_token',token);
+  try{
+    statusBox.textContent='Connexion en cours…';
+    statusBox.className='status';
+    login.hidden=true;
+    panel.hidden=false;
+    await load();
+  }catch(error){
+    login.hidden=false;
+    panel.hidden=true;
+    const msg=error.message==='Jeton refusé'
+      ?'❌ Jeton incorrect ou rejeté. Assurez-vous de coller la clé XHATSAPP_ADMIN_TOKEN (64 caractères).'
+      :'❌ Erreur de connexion : '+(error.message||'serveur inaccessible.');
+    showLoginError(msg);
+  }
+}
+function logout(){token='';sessionStorage.removeItem('xhatsapp_admin_token');tokenInput.value='';clearLoginError();login.hidden=false;panel.hidden=true;}
 document.getElementById('connect').onclick=connect;document.getElementById('logout').onclick=logout;document.getElementById('sync').onclick=async()=>{try{const data=await api('/admin/api/groups/sync',{method:'POST',body:'{}'});status(data.imported+' groupe(s) synchronisé(s)');await load();}catch(error){status(error.message,true);}};
 document.getElementById('save-recap').onclick=async()=>{const signature=document.getElementById('recap-signature').value;if(signature.length>600){status('Signature trop longue',true);return;}try{await api('/admin/api/recap-settings',{method:'PUT',body:JSON.stringify({signature})});status('Signature du récapitulatif enregistrée');}catch(error){status(error.message,true);}};
-if(token){login.hidden=true;panel.hidden=false;load().catch(error=>status(error.message,true));}
+if(token){login.hidden=true;panel.hidden=false;load().catch(error=>{login.hidden=false;panel.hidden=true;showLoginError('Session expirée ou jeton refusé.');});}
 </script></body></html>`;
