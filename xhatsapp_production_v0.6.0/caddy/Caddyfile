@@ -23,10 +23,6 @@
 		reverse_proxy webhook:3000
 	}
 
-	@admin path /admin /admin/*
-	handle @admin {
-		reverse_proxy webhook:3000
-	}
 
 	handle {
 		respond "Not Found" 404
