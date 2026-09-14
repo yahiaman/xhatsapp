@@ -1,4 +1,4 @@
-﻿# Xhatsapp — Pilotage et Automatisation Multi-Groupes WhatsApp
+# Xhatsapp — Pilotage et Automatisation Multi-Groupes WhatsApp
 
 Système de gestion, modération, diffusion ciblée, contrôle des horaires et récapitulatifs quotidiens par IA pour les groupes WhatsApp liés aux activités Hajj, Omra, bénévoles et administration.
 
@@ -6,6 +6,7 @@ Système de gestion, modération, diffusion ciblée, contrôle des horaires et r
 
 ## 📁 Structure du dépôt
 
+- **[`CONTEXT_EXPLOITATION.md`](CONTEXT_EXPLOITATION.md)** : **Dossier de contexte & d'exploitation complet (architecture, anti-ban, modération, commandes, reconnexion WhatsApp).**
 - **[`preview.md`](preview.md)** : Cahier des charges fonctionnel et technique initial.
 - **[`xhatsapp_production_v0.6.0/`](xhatsapp_production_v0.6.0/)** : Socle complet de production version 0.6.0.
   - `docker-compose.yml` : Orchestration des conteneurs (OpenWA, Postgres, Redis, OmniRoute, Webhook, Caddy).
