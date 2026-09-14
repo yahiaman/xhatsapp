@@ -244,3 +244,181 @@ test('normalizes phone numbers and checks exempt moderator status', async () => 
   assert.ok(msgList.includes('Modérateur Yahia'));
   assert.ok(msgList.includes('06 12 34 56 78'));
 });
+
+test('parses STATUT, BAN, UNBAN, and Resource commands', async () => {
+  const { parseCommunityCommand, isPhoneBanned } = await import('../src/community.js');
+
+  // Status commands
+  assert.deepEqual(parseCommunityCommand('STATUT'), { type: 'status' });
+  assert.deepEqual(parseCommunityCommand('statut'), { type: 'status' });
+  assert.deepEqual(parseCommunityCommand('SANTE'), { type: 'status' });
+  assert.deepEqual(parseCommunityCommand('STATUS'), { type: 'status' });
+  assert.deepEqual(parseCommunityCommand('ETAT'), { type: 'status' });
+
+  // Ban commands
+  assert.deepEqual(
+    parseCommunityCommand('BAN +33612345678 Publicité frauduleuse'),
+    { type: 'ban', phone: '+33612345678', reason: 'Publicité frauduleuse' },
+  );
+  assert.deepEqual(
+    parseCommunityCommand('ban 06 12 34 56 78'),
+    { type: 'ban', phone: '06 12 34 56 78', reason: null },
+  );
+  assert.deepEqual(
+    parseCommunityCommand('BLACKLIST 33700000000 Arnaque'),
+    { type: 'ban', phone: '33700000000', reason: 'Arnaque' },
+  );
+
+  // Unban commands
+  assert.deepEqual(
+    parseCommunityCommand('UNBAN +33612345678'),
+    { type: 'unban', phone: '+33612345678' },
+  );
+  assert.deepEqual(
+    parseCommunityCommand('deban 0612345678'),
+    { type: 'unban', phone: '0612345678' },
+  );
+
+  // List bans
+  assert.deepEqual(parseCommunityCommand('LISTE BAN'), { type: 'list_bans' });
+  assert.deepEqual(parseCommunityCommand('liste bans'), { type: 'list_bans' });
+  assert.deepEqual(parseCommunityCommand('BANS'), { type: 'list_bans' });
+  assert.deepEqual(parseCommunityCommand('BLACKLIST'), { type: 'list_bans' });
+  assert.deepEqual(parseCommunityCommand('LISTE NOIRE'), { type: 'list_bans' });
+
+  // Resource list & shortcuts
+  assert.deepEqual(parseCommunityCommand('RESSOURCES'), { type: 'list_resources' });
+  assert.deepEqual(parseCommunityCommand('liste ressources'), { type: 'list_resources' });
+  assert.deepEqual(parseCommunityCommand('LIENS'), { type: 'list_resources' });
+  assert.deepEqual(parseCommunityCommand('!youtube'), { type: 'shortcut', shortcut: 'youtube' });
+  assert.deepEqual(parseCommunityCommand('!site'), { type: 'shortcut', shortcut: 'site' });
+  assert.deepEqual(parseCommunityCommand('!hotels'), { type: 'shortcut', shortcut: 'hotels' });
+
+  // isPhoneBanned check
+  const banned = [
+    { phone: '+33 6 99 99 99 99', normalized_phone: '33699999999', reason: 'Spam' },
+  ];
+  assert.equal(isPhoneBanned('33699999999@c.us', banned), true);
+  assert.equal(isPhoneBanned('0699999999', banned), true);
+  assert.equal(isPhoneBanned('+33699999999', banned), true);
+  assert.equal(isPhoneBanned('0612345678', banned), false);
+  assert.equal(isPhoneBanned(null, banned), false);
+});
+
+test('detects resource mentions and builds cards properly', async () => {
+  const {
+    detectResourceMention,
+    buildResourceMessage,
+    buildAllResourcesMessage,
+    buildStatusReport,
+    buildBanSuccessMessage,
+    buildBannedListMessage,
+    buildBannedAttemptAlert,
+  } = await import('../src/community.js');
+
+  const mockResources = [
+    {
+      id: 'youtube',
+      title: 'Chaîne YouTube Entraide Nusuk Hajj',
+      url: 'https://www.youtube.com/@entraidenusukhajj',
+      description: 'Nos guides vidéos pour préparer le Hajj.',
+      keywords: ['youtube', 'chaine youtube', 'video', 'videos', 'tuto', 'tutoriel'],
+    },
+    {
+      id: 'site',
+      title: 'Site Web Officiel',
+      url: 'https://entraide-nusuk-hajj.com',
+      description: 'Articles et démarches.',
+      keywords: ['site', 'site internet', 'site web', 'notre site', 'article'],
+    },
+    {
+      id: 'hotels',
+      title: 'Cartes des Hôtels',
+      url: 'https://entraide-nusuk-hajj.com/hotels',
+      description: 'Localisation et distances des hôtels.',
+      keywords: ['hotel', 'hotels', 'carte', 'cartes des hotels', 'distance'],
+    },
+  ];
+
+  // 1. Direct shortcuts
+  const matchShortcut = detectResourceMention('!youtube', mockResources);
+  assert.ok(matchShortcut);
+  assert.equal(matchShortcut.type, 'resource');
+  assert.equal(matchShortcut.resource.id, 'youtube');
+
+  const matchAll = detectResourceMention('!liens', mockResources);
+  assert.ok(matchAll);
+  assert.equal(matchAll.type, 'all');
+
+  // 2. Natural language mentions
+  const matchNatural1 = detectResourceMention('N’hésitez pas à consulter notre chaîne youtube pour voir le tuto.', mockResources);
+  assert.ok(matchNatural1);
+  assert.equal(matchNatural1.resource.id, 'youtube');
+
+  const matchNatural2 = detectResourceMention('Toutes les infos sont disponibles sur notre site internet !', mockResources);
+  assert.ok(matchNatural2);
+  assert.equal(matchNatural2.resource.id, 'site');
+
+  const matchNatural3 = detectResourceMention('Avez-vous vu la carte des hotels à Médine ?', mockResources);
+  assert.ok(matchNatural3);
+  assert.equal(matchNatural3.resource.id, 'hotels');
+
+  // Negative test: irrelevant sentence
+  const noMatch = detectResourceMention('Bonjour frère quel est le tarif du mouton ?', mockResources);
+  assert.equal(noMatch, null);
+
+  // 3. Builders tests
+  const resourceCard = buildResourceMessage(mockResources[0]);
+  assert.ok(resourceCard.includes('CHAÎNE YOUTUBE'));
+  assert.ok(resourceCard.includes('https://www.youtube.com/@entraidenusukhajj'));
+
+  const allCard = buildAllResourcesMessage(mockResources);
+  assert.ok(allCard.includes('RESSOURCES & LIENS OFFICIELS'));
+  assert.ok(allCard.includes('Chaîne YouTube'));
+  assert.ok(allCard.includes('Site Web Officiel'));
+
+  const statusReport = buildStatusReport({
+    sessionConnected: true,
+    sessionDetails: '+33611457462',
+    monitoredGroups: [
+      { name: 'Groupe_01', participantCount: 850, isAnnounce: false },
+      { name: 'Groupe_02', participantCount: 420, isAnnounce: true },
+    ],
+    antiBanEnabled: true,
+    scheduleTimes: { lock: '23h00', unlock: '07h00', recap: '20h10' },
+    moderatorsCount: 3,
+    bannedCount: 1,
+  });
+  assert.ok(statusReport.includes('ÉTAT DU SYSTÈME XHATSAPP'));
+  assert.ok(statusReport.includes('🟢 Connecté (+33611457462)'));
+  assert.ok(statusReport.includes('*Groupe_01* : 850 membres (🔓 Ouvert)'));
+  assert.ok(statusReport.includes('*Groupe_02* : 420 membres (🔒 Verrouillé)'));
+  assert.ok(statusReport.includes('*Total pèlerins :* ~1270 membres'));
+  assert.ok(statusReport.includes('Membres bannis (Liste noire) : 1'));
+
+  const banMsg = buildBanSuccessMessage({
+    phone: '33612345678',
+    reason: 'Spam de masse',
+    kickedGroups: ['Groupe_01'],
+  });
+  assert.ok(banMsg.includes('MEMBRE BANNI AVEC SUCCÈS'));
+  assert.ok(banMsg.includes('+33612345678'));
+  assert.ok(banMsg.includes('Spam de masse'));
+  assert.ok(banMsg.includes('Groupe_01'));
+
+  const banListMsg = buildBannedListMessage([
+    { normalized_phone: '33612345678', reason: 'Arnaque' },
+  ]);
+  assert.ok(banListMsg.includes('LISTE NOIRE DES MEMBRES BANNIS'));
+  assert.ok(banListMsg.includes('+33612345678 (Arnaque)'));
+
+  const bannedAlert = buildBannedAttemptAlert({
+    phone: '33612345678',
+    senderReference: 'usr_ban',
+    groupName: 'Groupe_02',
+    isRequest: true,
+  });
+  assert.ok(bannedAlert.includes('ALERTE : TENTATIVE D’ACCÈS PAR UN MEMBRE BANNI'));
+  assert.ok(bannedAlert.includes('Demande d’adhésion automatiquement rejetée'));
+});
+

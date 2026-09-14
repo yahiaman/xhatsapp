@@ -109,5 +109,11 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
         `/contacts/${encodeURIComponent(contactId)}`,
       );
     },
+    getSessionStatus() {
+      return request('get_session_status', 'GET', '');
+    },
+    getMe() {
+      return request('get_me', 'GET', '/me');
+    },
   };
 }

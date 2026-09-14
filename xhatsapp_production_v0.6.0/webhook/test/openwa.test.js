@@ -150,4 +150,29 @@ test('retrieves contact info with encoded contact id', async (context) => {
   assert.equal(contact.pushName, 'Test');
 });
 
+test('retrieves session status and me profile', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (url.endsWith('/me')) {
+      return new Response(JSON.stringify({ id: '33611457462@c.us', pushName: 'Admin' }), {
+        status: 200, headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify({ status: 'CONNECTED' }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 'my_session', apiKey: 'k' });
+  const status = await client.getSessionStatus();
+  assert.equal(calls[0].url, 'http://openwa:2785/api/sessions/my_session');
+  assert.equal(status.status, 'CONNECTED');
+
+  const me = await client.getMe();
+  assert.equal(calls[1].url, 'http://openwa:2785/api/sessions/my_session/me');
+  assert.equal(me.id, '33611457462@c.us');
+});
+
 

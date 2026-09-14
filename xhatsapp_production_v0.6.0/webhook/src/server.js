@@ -61,6 +61,12 @@ import {
   markRecapDeliverySent,
   updateCommunityTemplate,
   updateRecapSettings,
+  addBannedMember,
+  deleteBannedMember,
+  listBannedMembers,
+  listCommunityResources,
+  getCommunityResource,
+  upsertCommunityResource,
 } from './db.js';
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
@@ -94,6 +100,10 @@ import {
 } from './recap.js';
 import {
   auditDuplicates,
+  buildAllResourcesMessage,
+  buildBanSuccessMessage,
+  buildBannedAttemptAlert,
+  buildBannedListMessage,
   buildDuplicateAdminAlert,
   buildDuplicateAuditReport,
   buildDuplicateRefusalDm,
@@ -102,9 +112,14 @@ import {
   buildModeratorsListMessage,
   buildOnboardingDm,
   buildPanicAlert,
+  buildResourceMessage,
+  buildStatusReport,
   buildUnlockNotice,
   detectPanic,
+  detectResourceMention,
+  isPhoneBanned,
   isPhoneExempt,
+  normalizePhoneNumber,
   parseCommunityCommand,
 } from './community.js';
 
@@ -223,6 +238,34 @@ async function reloadCommunityTemplates() {
     });
   }
 }
+
+let bannedMembersCache = [];
+
+async function reloadBannedMembers() {
+  try {
+    bannedMembersCache = await listBannedMembers();
+    console.log('Banned members cache reloaded', { count: bannedMembersCache.length });
+  } catch (error) {
+    console.warn('Banned members cache reload failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
+let communityResourcesCache = [];
+
+async function reloadCommunityResources() {
+  try {
+    communityResourcesCache = await listCommunityResources();
+    console.log('Community resources cache reloaded', { count: communityResourcesCache.length });
+  } catch (error) {
+    console.warn('Community resources cache reload failed', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
+const resourceCooldownMap = new Map();
 
 async function newModerationAlert(messageInternalId, sourceGroupId, detection, status = 'pending') {
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -721,6 +764,214 @@ async function handleCommunityCommand(message, command) {
     return { handled: true, status: 'audit_completed' };
   }
 
+  if (command.type === 'status') {
+    let sessionConnected = false;
+    let sessionDetails = null;
+    try {
+      const me = await openWa.getMe().catch(() => null);
+      if (me && (me.id || me.wid)) {
+        sessionConnected = true;
+        const myId = me.id || me.wid;
+        sessionDetails = `+${String(myId).split('@')[0]}`;
+      } else {
+        const sessionStatus = await openWa.getSessionStatus().catch(() => null);
+        sessionConnected = Boolean(sessionStatus);
+        sessionDetails = sessionStatus?.status || (sessionConnected ? 'actif' : null);
+      }
+    } catch {
+      sessionConnected = false;
+    }
+
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
+
+    const monitoredGroupsInfo = [];
+    for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
+      let participantCount = '?';
+      let isAnnounce = false;
+      try {
+        const [info, settings] = await Promise.all([
+          openWa.getGroup(chatId).catch(() => null),
+          openWa.getGroupSettings(chatId).catch(() => null),
+        ]);
+        if (info && Array.isArray(info.participants)) {
+          participantCount = info.participants.length;
+        }
+        if (settings && typeof settings.announce === 'boolean') {
+          isAnnounce = settings.announce;
+        }
+      } catch {
+        // ignore
+      }
+      monitoredGroupsInfo.push({
+        name: group.name || group.inventory_ref || chatId,
+        participantCount,
+        isAnnounce,
+      });
+    }
+
+    const report = buildStatusReport({
+      sessionConnected,
+      sessionDetails,
+      monitoredGroups: monitoredGroupsInfo,
+      antiBanEnabled: !enableUnsolicitedPrivateDms,
+      scheduleTimes: { lock: '23h00', unlock: '07h00', recap: '20h10' },
+      moderatorsCount: exemptModeratorsCache.length,
+      bannedCount: bannedMembersCache.length,
+    });
+
+    await openWa.sendText(message.chatId, report).catch(() => {});
+    return { handled: true, status: 'status_reported' };
+  }
+
+  if (command.type === 'ban') {
+    const rawTarget = command.phone;
+    const reason = command.reason;
+    const targetDigits = String(rawTarget).replace(/\D/g, '');
+    const normalizedTarget = normalizePhoneNumber(targetDigits);
+
+    if (!targetDigits || targetDigits.length < 6) {
+      await openWa.sendText(
+        message.chatId,
+        '⚠️ *Numéro invalide.* Format attendu : *BAN <numéro> [raison]* (ex: *BAN +33612345678 Publicité non autorisée*)',
+      ).catch(() => {});
+      return { handled: false, reason: 'invalid_phone' };
+    }
+
+    if (
+      isPhoneExempt(rawTarget, exemptModeratorsCache) ||
+      isPhoneExempt(normalizedTarget, exemptModeratorsCache)
+    ) {
+      await openWa.sendText(
+        message.chatId,
+        '⚠️ *Action refusée :* Ce numéro figure dans la liste des modérateurs / exemptés et ne peut pas être banni.',
+      ).catch(() => {});
+      return { handled: false, reason: 'exempt_moderator_cannot_be_banned' };
+    }
+
+    // 1. Add to database & update cache
+    try {
+      await addBannedMember(rawTarget, reason, message.senderId || 'admin');
+      await reloadBannedMembers();
+    } catch (error) {
+      console.error('Failed to add banned member to DB', { error: safeOperationalError(error) });
+    }
+
+    // 2. Immediate kick from all monitored groups + reject pending requests
+    const allGroups = await listGroupPolicies();
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
+
+    const kickedFromGroups = [];
+    for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
+      try {
+        const groupInfo = await openWa.getGroup(chatId).catch(() => null);
+        const participant = groupInfo?.participants?.find((p) => {
+          const pPhone = p.number ? p.number.replace(/\D/g, '') : p.id?.split('@')[0].replace(/\D/g, '');
+          const pNorm = normalizePhoneNumber(pPhone);
+          return (
+            pPhone === targetDigits ||
+            pNorm === normalizedTarget ||
+            (normalizedTarget.length >= 9 && pNorm.endsWith(normalizedTarget)) ||
+            (pNorm.length >= 9 && normalizedTarget.endsWith(pNorm))
+          );
+        });
+
+        if (participant) {
+          await openWa.removeParticipants(chatId, [participant.id]);
+          kickedFromGroups.push(group.name || group.inventory_ref || chatId);
+          console.log('Banned member kicked from group', { group: group.name, participant: participant.id });
+        }
+
+        // Also reject pending requests if any
+        const requests = await openWa.getMembershipRequests(chatId).catch(() => []);
+        const matchingReq = requests.find((req) => {
+          const rPhone = req.id?.split('@')[0].replace(/\D/g, '');
+          const rNorm = normalizePhoneNumber(rPhone);
+          return (
+            rPhone === targetDigits ||
+            rNorm === normalizedTarget ||
+            (normalizedTarget.length >= 9 && rNorm.endsWith(normalizedTarget)) ||
+            (rNorm.length >= 9 && normalizedTarget.endsWith(rNorm))
+          );
+        });
+        if (matchingReq) {
+          await openWa.rejectMembershipRequests(chatId, [matchingReq.id]);
+          console.log('Banned member pending request rejected', { group: group.name, req: matchingReq.id });
+        }
+      } catch (error) {
+        console.error('Failed to kick banned member from group', { group: group.name, error: safeOperationalError(error) });
+      }
+    }
+
+    const successMsg = buildBanSuccessMessage({
+      phone: normalizedTarget,
+      reason,
+      kickedGroups: kickedFromGroups,
+    });
+    await openWa.sendText(message.chatId, successMsg).catch(() => {});
+    return { handled: true, status: 'member_banned' };
+  }
+
+  if (command.type === 'unban') {
+    const rawTarget = command.phone;
+    const targetDigits = String(rawTarget).replace(/\D/g, '');
+    const normalizedTarget = normalizePhoneNumber(targetDigits);
+
+    try {
+      const deleted = await deleteBannedMember(rawTarget);
+      await reloadBannedMembers();
+      if (deleted) {
+        await openWa.sendText(
+          message.chatId,
+          `✅ *MEMBRE DÉBANNI*\n───────────────────────────\n👤 *Numéro :* +${deleted.normalized_phone || normalizedTarget}\n\nLe numéro a été retiré de la liste noire. Le membre peut à nouveau rejoindre les groupes.`,
+        ).catch(() => {});
+      } else {
+        await openWa.sendText(
+          message.chatId,
+          `ℹ️ Le numéro +${normalizedTarget} n’a pas été trouvé dans la liste noire.`,
+        ).catch(() => {});
+      }
+      return { handled: true, status: 'member_unbanned' };
+    } catch (error) {
+      console.error('Failed to unban member', { error: safeOperationalError(error) });
+      return { handled: false, reason: 'unban_error' };
+    }
+  }
+
+  if (command.type === 'list_bans') {
+    const list = await listBannedMembers().catch(() => bannedMembersCache);
+    const text = buildBannedListMessage(list);
+    await openWa.sendText(message.chatId, text).catch(() => {});
+    return { handled: true, status: 'bans_listed' };
+  }
+
+  if (command.type === 'list_resources') {
+    const list = await listCommunityResources().catch(() => communityResourcesCache);
+    const text = buildAllResourcesMessage(list);
+    await openWa.sendText(message.chatId, text).catch(() => {});
+    return { handled: true, status: 'resources_listed' };
+  }
+
+  if (command.type === 'shortcut') {
+    const list = await listCommunityResources().catch(() => communityResourcesCache);
+    const mention = detectResourceMention(`!${command.shortcut}`, list);
+    if (mention) {
+      const text = mention.type === 'all'
+        ? buildAllResourcesMessage(list)
+        : buildResourceMessage(mention.resource);
+      await openWa.sendText(message.chatId, text).catch(() => {});
+      return { handled: true, status: `resource_${command.shortcut}` };
+    }
+  }
+
   return { handled: false, reason: 'unknown_community_command' };
 }
 
@@ -863,6 +1114,38 @@ async function handleGroupJoinEvent(payload) {
       console.log('Group join: participant is admin/moderator/exempt, exempted from checks', {
         participant_ref: safeReference(participantId),
       });
+      continue;
+    }
+
+    if (
+      isPhoneBanned(participantId, bannedMembersCache) ||
+      (phone && isPhoneBanned(phone, bannedMembersCache)) ||
+      (directChatId && isPhoneBanned(directChatId, bannedMembersCache))
+    ) {
+      console.log('Group join: BANNED member detected, kicking immediately', {
+        participant_ref: safeReference(participantId),
+        resolved_phone: phone ? `+${phone}` : 'unknown',
+        group: groupPolicy.name,
+      });
+
+      try {
+        await openWa.removeParticipants(groupId, [participantId]);
+      } catch (error) {
+        console.error('Failed to remove banned participant on join', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+
+      if (adminTarget) {
+        const bannedAlert = buildBannedAttemptAlert({
+          phone,
+          senderReference: safeReference(participantId),
+          groupName: groupPolicy.name || groupPolicy.inventory_ref || 'Groupe surveillé',
+          isRequest: false,
+        });
+        await openWa.sendText(adminTarget.chat_id, bannedAlert).catch(() => {});
+      }
       continue;
     }
 
@@ -1033,6 +1316,38 @@ async function handleGroupJoinRequestEvent(payload) {
       console.log('Group join request: participant is exempt/moderator, leaving for admin manual review', {
         participant_ref: safeReference(participantId),
       });
+      continue;
+    }
+
+    if (
+      isPhoneBanned(participantId, bannedMembersCache) ||
+      (phone && isPhoneBanned(phone, bannedMembersCache)) ||
+      (directChatId && isPhoneBanned(directChatId, bannedMembersCache))
+    ) {
+      console.log('Group join request: BANNED requester detected, rejecting immediately', {
+        participant_ref: safeReference(participantId),
+        resolved_phone: phone ? `+${phone}` : 'unknown',
+        group: groupPolicy.name,
+      });
+
+      try {
+        await openWa.rejectMembershipRequests(groupId, [participantId]);
+      } catch (error) {
+        console.error('Failed to reject banned membership request', {
+          participant_ref: safeReference(participantId),
+          error: safeOperationalError(error),
+        });
+      }
+
+      if (adminTarget) {
+        const bannedAlert = buildBannedAttemptAlert({
+          phone,
+          senderReference: safeReference(participantId),
+          groupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+          isRequest: true,
+        });
+        await openWa.sendText(adminTarget.chat_id, bannedAlert).catch(() => {});
+      }
       continue;
     }
 
@@ -1288,27 +1603,64 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
         const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false);
         status = alert ? 'flagged' : status;
       } else {
-        const panic = detectPanic(message.text);
-        if (panic.isPanic) {
-          try {
-            const admin = await getAdminTarget();
-            if (admin) {
-              const panicAlert = buildPanicAlert({
-                groupName: groupPolicy.name,
-                groupReference: groupPolicy.inventory_ref || safeReference(message.chatId),
-                senderName: message.senderName,
-                senderReference: safeReference(message.senderId),
-                text: message.text,
-                matches: panic.matches,
-              });
-              await openWa.sendText(admin.chat_id, panicAlert);
-              console.log('Panic/rumor sentinel alert sent', {
-                group_ref: safeReference(message.chatId),
-                matches: panic.matches,
+        let resourceTriggered = false;
+        const isModOrAdmin = isPhoneExempt(message.senderId, exemptModeratorsCache);
+        if (isModOrAdmin) {
+          const resourceMention = detectResourceMention(message.text, communityResourcesCache);
+          if (resourceMention) {
+            const resKey = resourceMention.type === 'all' ? 'all' : resourceMention.resource.id;
+            const cooldownKey = `${message.chatId}:${resKey}`;
+            const lastSent = resourceCooldownMap.get(cooldownKey) || 0;
+            const now = Date.now();
+            if (now - lastSent >= 60_000) {
+              resourceCooldownMap.set(cooldownKey, now);
+              const cardText = resourceMention.type === 'all'
+                ? buildAllResourcesMessage(communityResourcesCache)
+                : buildResourceMessage(resourceMention.resource);
+              try {
+                await openWa.sendText(message.chatId, cardText);
+                resourceTriggered = true;
+                status = `resource_shared_${resKey}`;
+                console.log('Community resource auto-shared in group', {
+                  group: groupPolicy.name,
+                  resource: resKey,
+                  author: safeReference(message.senderId),
+                });
+              } catch (error) {
+                console.error('Failed to send resource message', { error: safeOperationalError(error) });
+              }
+            } else {
+              console.log('Resource share skipped due to cooldown', {
+                group: groupPolicy.name,
+                resource: resKey,
               });
             }
-          } catch (error) {
-            console.error('Panic sentinel delivery failed', { error: safeOperationalError(error) });
+          }
+        }
+
+        if (!resourceTriggered) {
+          const panic = detectPanic(message.text);
+          if (panic.isPanic) {
+            try {
+              const admin = await getAdminTarget();
+              if (admin) {
+                const panicAlert = buildPanicAlert({
+                  groupName: groupPolicy.name,
+                  groupReference: groupPolicy.inventory_ref || safeReference(message.chatId),
+                  senderName: message.senderName,
+                  senderReference: safeReference(message.senderId),
+                  text: message.text,
+                  matches: panic.matches,
+                });
+                await openWa.sendText(admin.chat_id, panicAlert);
+                console.log('Panic/rumor sentinel alert sent', {
+                  group_ref: safeReference(message.chatId),
+                  matches: panic.matches,
+                });
+              }
+            } catch (error) {
+              console.error('Panic sentinel delivery failed', { error: safeOperationalError(error) });
+            }
           }
         }
       }
@@ -1695,6 +2047,22 @@ try {
   await reloadCommunityTemplates();
 } catch (error) {
   console.warn('Community templates initialization failed', {
+    error: error instanceof Error ? error.message : 'unknown_error',
+  });
+}
+
+try {
+  await reloadBannedMembers();
+} catch (error) {
+  console.warn('Banned members initialization failed', {
+    error: error instanceof Error ? error.message : 'unknown_error',
+  });
+}
+
+try {
+  await reloadCommunityResources();
+} catch (error) {
+  console.warn('Community resources initialization failed', {
     error: error instanceof Error ? error.message : 'unknown_error',
   });
 }

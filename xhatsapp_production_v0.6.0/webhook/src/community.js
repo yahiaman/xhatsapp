@@ -47,12 +47,67 @@ export function parseCommunityCommand(rawText) {
     return { type: 'list_moderators' };
   }
 
+  if (
+    normalized === 'STATUT' ||
+    normalized === 'SANTE' ||
+    normalized === 'STATUS' ||
+    normalized === 'HEALTH' ||
+    normalized === 'ETAT' ||
+    normalized === 'INFOS'
+  ) {
+    return { type: 'status' };
+  }
+
+  if (
+    normalized === 'LISTE BAN' ||
+    normalized === 'LISTE BANS' ||
+    normalized === 'BANS' ||
+    normalized === 'BLACKLIST' ||
+    normalized === 'LISTE NOIRE'
+  ) {
+    return { type: 'list_bans' };
+  }
+
+  if (
+    normalized === 'RESSOURCES' ||
+    normalized === 'LISTE RESSOURCES' ||
+    normalized === 'LIENS' ||
+    normalized === 'LISTE LIENS'
+  ) {
+    return { type: 'list_resources' };
+  }
+
+  const banMatch = trimmed.match(/^(?:BAN|BLACKLIST|EXPULSER)\s+([+\d\s\-_().]{6,30})(?:\s+(.+))?$/i);
+  if (banMatch) {
+    return {
+      type: 'ban',
+      phone: banMatch[1].trim(),
+      reason: banMatch[2] ? banMatch[2].trim() : null,
+    };
+  }
+
+  const unbanMatch = trimmed.match(/^(?:UNBAN|DEBAN|DEBLOQUER)\s+([+\d\s\-_().]{6,30})$/i);
+  if (unbanMatch) {
+    return {
+      type: 'unban',
+      phone: unbanMatch[1].trim(),
+    };
+  }
+
   if (/^FLASH(?:\s+|:|$)/i.test(trimmed)) {
     const flashBody = trimmed.replace(/^FLASH(?:\s*:|\s+)?/i, '').trim();
     if (!flashBody) {
       return { type: 'flash', error: 'flash_empty' };
     }
     return { type: 'flash', message: flashBody };
+  }
+
+  const shortcutMatch = trimmed.match(/^!([a-zA-Z0-9_\-]+)$/);
+  if (shortcutMatch) {
+    return {
+      type: 'shortcut',
+      shortcut: shortcutMatch[1].toLowerCase(),
+    };
   }
 
   return null;
@@ -380,4 +435,207 @@ export function buildModeratorsListMessage(moderatorsList = []) {
 
   return lines.join('\n');
 }
+
+export function isPhoneBanned(phoneOrId, bannedList = []) {
+  if (!phoneOrId || !Array.isArray(bannedList) || bannedList.length === 0) return false;
+  const rawDigits = String(phoneOrId).split('@')[0].replace(/\D/g, '');
+  const normalized = normalizePhoneNumber(rawDigits);
+
+  return bannedList.some((item) => {
+    const itemDigits = typeof item === 'string'
+      ? item.replace(/\D/g, '')
+      : String(item.normalized_phone || item.phone || '').replace(/\D/g, '');
+    const itemNorm = normalizePhoneNumber(itemDigits);
+    return (
+      rawDigits === itemDigits ||
+      normalized === itemNorm ||
+      (itemNorm.length >= 9 && normalized.endsWith(itemNorm)) ||
+      (normalized.length >= 9 && itemNorm.endsWith(normalized))
+    );
+  });
+}
+
+export function detectResourceMention(rawText, resourcesList = []) {
+  if (typeof rawText !== 'string' || !rawText.trim()) return null;
+  const clean = normalizeText(rawText);
+  const trimmed = rawText.trim();
+
+  // 1. Direct command shortcut, e.g. !youtube, !site, !faq, !hotels, !packages, !liens
+  const cmdMatch = trimmed.match(/^[!/]([a-zA-Z0-9_\-]+)$/);
+  if (cmdMatch) {
+    const cmd = cmdMatch[1].toLowerCase();
+    if (cmd === 'liens' || cmd === 'ressources' || cmd === 'all') {
+      return { type: 'all' };
+    }
+    const found = resourcesList.find((r) => {
+      if (r.id.toLowerCase() === cmd) return true;
+      if (Array.isArray(r.keywords) && r.keywords.some((k) => normalizeText(k) === cmd)) return true;
+      return false;
+    });
+    if (found) {
+      return { type: 'resource', resource: found };
+    }
+  }
+
+  // 2. Natural language detection based on keywords
+  for (const r of resourcesList) {
+    const keywords = Array.isArray(r.keywords) ? r.keywords : [];
+    for (const kw of keywords) {
+      const cleanKw = normalizeText(kw);
+      if (!cleanKw) continue;
+      const escaped = cleanKw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const regex = new RegExp(`(^|\\s|[.,;:!?()'])${escaped}($|\\s|[.,;:!?()'])`, 'i');
+      if (regex.test(clean)) {
+        return { type: 'resource', resource: r, matchedKeyword: kw };
+      }
+    }
+  }
+
+  return null;
+}
+
+export function buildResourceMessage(resource) {
+  return [
+    `📌 *${(resource.title || '').toUpperCase()}*`,
+    '───────────────────────────',
+    resource.description || '',
+    '',
+    `👉 *Lien officiel :* ${resource.url || ''}`,
+    '───────────────────────────',
+    'ℹ️ _Ressource officielle partagée par l’équipe Entraide Nusuk Hajj._',
+  ].join('\n');
+}
+
+export function buildAllResourcesMessage(resourcesList = []) {
+  const lines = [
+    '📚 *RESSOURCES & LIENS OFFICIELS ENTRAIDE NUSUK HAJJ*',
+    '───────────────────────────',
+    'Retrouvez l’ensemble de nos guides, vidéos et outils pratiques pour votre Hajj :',
+    '',
+  ];
+  resourcesList.forEach((r) => {
+    lines.push(`🔹 *${r.title}*`);
+    if (r.description) lines.push(`   ${r.description}`);
+    lines.push(`   👉 ${r.url}`);
+    lines.push('');
+  });
+  lines.push('───────────────────────────');
+  lines.push('ℹ️ _Tous nos contenus sont 100% gratuits et indépendants._');
+  return lines.join('\n');
+}
+
+export function buildStatusReport({
+  sessionConnected = true,
+  sessionDetails = null,
+  monitoredGroups = [],
+  antiBanEnabled = true,
+  scheduleTimes = { lock: '23h00', unlock: '07h00', recap: '20h10' },
+  recapInfo = null,
+  moderatorsCount = 0,
+  bannedCount = 0,
+}) {
+  const sessionStatusStr = sessionConnected ? '🟢 Connecté' : '🔴 Déconnecté';
+  const sessionInfo = sessionDetails ? ` (${sessionDetails})` : '';
+  const antiBanStr = antiBanEnabled
+    ? '🟢 ACTIF (0 MP privé envoyé — anti-ban strict)'
+    : '⚠️ DÉSACTIVÉ (envoi de MP privé autorisé)';
+
+  const lines = [
+    '📊 *ÉTAT DU SYSTÈME XHATSAPP*',
+    '───────────────────────────',
+    `📱 *Session WhatsApp :* ${sessionStatusStr}${sessionInfo}`,
+    `🛡️ *Protection Anti-Ban :* ${antiBanStr}`,
+    '',
+    `👥 *Groupes Surveillés (${monitoredGroups.length}) :*`,
+  ];
+
+  if (monitoredGroups.length === 0) {
+    lines.push('_(Aucun groupe surveillé configuré)_');
+  } else {
+    let totalParticipants = 0;
+    monitoredGroups.forEach((g) => {
+      const pCount = g.participantCount ?? g.participantsCount ?? '?';
+      if (typeof pCount === 'number') totalParticipants += pCount;
+      const lockState = g.isAnnounce ? '🔒 Verrouillé' : '🔓 Ouvert';
+      lines.push(`• *${g.name}* : ${pCount} membres (${lockState})`);
+    });
+    if (totalParticipants > 0) {
+      lines.push(`📊 *Total pèlerins :* ~${totalParticipants} membres`);
+    }
+  }
+
+  lines.push('');
+  lines.push('🕒 *Automatisations (Europe/Paris) :*');
+  lines.push(`• 📰 Récapitulatif quotidien : ${scheduleTimes.recap || '20h10'}${recapInfo ? ` [${recapInfo}]` : ''}`);
+  lines.push(`• 🔒 Fermeture nocturne : ${scheduleTimes.lock || '23h00'}`);
+  lines.push(`• 🔓 Réouverture matinale : ${scheduleTimes.unlock || '07h00'}`);
+
+  lines.push('');
+  lines.push('🛡️ *Modération & Sécurité :*');
+  lines.push(`• Modérateurs / Exemptés : ${moderatorsCount} numéro(s)`);
+  lines.push(`• Membres bannis (Liste noire) : ${bannedCount} numéro(s)`);
+  lines.push('───────────────────────────');
+  lines.push('💡 _Commandes :_ *DOUBLONS*, *LISTE BAN*, *BAN <numéro>*, *UNBAN <numéro>*, *MODERATEURS*, *BLOCK ALL*, *UNBLOCK ALL*, *RESSOURCES*');
+
+  return lines.join('\n');
+}
+
+export function buildBanSuccessMessage({ phone, reason, kickedGroups = [] }) {
+  const kickSummary = kickedGroups.length > 0
+    ? `Expulsé de ${kickedGroups.length} groupe(s) : [${kickedGroups.join(', ')}]`
+    : 'Non présent actuellement dans les groupes surveillés';
+
+  return [
+    '🚫 *MEMBRE BANNI AVEC SUCCÈS*',
+    '───────────────────────────',
+    `👤 *Numéro :* +${phone}`,
+    `📝 *Raison :* ${reason || 'Non précisée'}`,
+    `🚪 *Action immédiate :* ${kickSummary}`,
+    '🛡️ *Statut :* Numéro ajouté à la liste noire permanente.',
+    'Toute tentative future de rejoindre nos groupes sera automatiquement rejetée.',
+  ].join('\n');
+}
+
+export function buildBannedListMessage(bannedList = []) {
+  if (!bannedList.length) {
+    return [
+      '🚫 *LISTE NOIRE DES MEMBRES BANNIS*',
+      '───────────────────────────',
+      'Aucun membre n’est actuellement sur la liste noire.',
+      '',
+      'ℹ️ _Pour bannir un numéro indésirable :_ *BAN <numéro> [raison]*',
+    ].join('\n');
+  }
+
+  const lines = [
+    '🚫 *LISTE NOIRE DES MEMBRES BANNIS*',
+    '───────────────────────────',
+    `Total : ${bannedList.length} numéro(s) interdit(s)`,
+    '',
+  ];
+
+  bannedList.forEach((b, idx) => {
+    const reason = b.reason ? ` (${b.reason})` : '';
+    lines.push(`${idx + 1}. +${b.normalized_phone || b.phone}${reason}`);
+  });
+
+  lines.push('');
+  lines.push('ℹ️ _Pour lever un bannissement :_ *UNBAN <numéro>*');
+  return lines.join('\n');
+}
+
+export function buildBannedAttemptAlert({ phone, senderReference, groupName, isRequest = false }) {
+  const member = phone ? `+${phone} (${senderReference})` : senderReference;
+  const action = isRequest
+    ? 'Demande d’adhésion automatiquement rejetée (numéro sur liste noire).'
+    : 'Membre automatiquement expulsé (numéro sur liste noire).';
+
+  return [
+    '🚫 *ALERTE : TENTATIVE D’ACCÈS PAR UN MEMBRE BANNI*',
+    `👤 *Membre :* ${member}`,
+    `📍 *Groupe :* ${groupName}`,
+    `⚙️ *Action :* ${action}`,
+  ].join('\n');
+}
+
 

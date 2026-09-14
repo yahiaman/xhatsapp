@@ -396,6 +396,105 @@ export async function updateCommunityTemplate(id, content) {
   return result.rows[0];
 }
 
+export async function listBannedMembers() {
+  const result = await pool.query(
+    `SELECT id, phone, normalized_phone, reason, banned_by, created_at
+     FROM banned_members
+     ORDER BY created_at DESC`,
+  );
+  return result.rows;
+}
+
+export async function addBannedMember(phone, reason = null, bannedBy = null) {
+  const cleanPhone = String(phone || '').trim();
+  const digitsOnly = cleanPhone.replace(/\D/g, '');
+  let normalized = digitsOnly;
+  if (/^0[1-9]\d{8}$/.test(digitsOnly)) {
+    normalized = `33${digitsOnly.slice(1)}`;
+  }
+  const cleanReason = reason ? String(reason).trim().slice(0, 500) : null;
+  const cleanBannedBy = bannedBy ? String(bannedBy).trim().slice(0, 64) : null;
+  const result = await pool.query(
+    `INSERT INTO banned_members (phone, normalized_phone, reason, banned_by, created_at)
+     VALUES ($1, $2, $3, $4, now())
+     ON CONFLICT (phone) DO UPDATE SET
+       normalized_phone = EXCLUDED.normalized_phone,
+       reason = coalesce(EXCLUDED.reason, banned_members.reason),
+       banned_by = coalesce(EXCLUDED.banned_by, banned_members.banned_by),
+       created_at = now()
+     RETURNING id, phone, normalized_phone, reason, banned_by, created_at`,
+    [cleanPhone, normalized, cleanReason, cleanBannedBy],
+  );
+  return result.rows[0];
+}
+
+export async function deleteBannedMember(phoneOrNormalized) {
+  const clean = String(phoneOrNormalized || '').trim();
+  const digits = clean.replace(/\D/g, '');
+  let norm = digits;
+  if (/^0[1-9]\d{8}$/.test(digits)) {
+    norm = `33${digits.slice(1)}`;
+  }
+  const result = await pool.query(
+    `DELETE FROM banned_members
+     WHERE phone = $1 OR normalized_phone = $2 OR normalized_phone = $3
+     RETURNING id, phone, normalized_phone, reason`,
+    [clean, digits, norm],
+  );
+  return result.rows[0] || null;
+}
+
+export async function isMemberBanned(phoneOrId) {
+  if (!phoneOrId) return false;
+  const rawDigits = String(phoneOrId).split('@')[0].replace(/\D/g, '');
+  let norm = rawDigits;
+  if (/^0[1-9]\d{8}$/.test(rawDigits)) {
+    norm = `33${rawDigits.slice(1)}`;
+  }
+  const result = await pool.query(
+    `SELECT 1 FROM banned_members
+     WHERE normalized_phone = $1 OR normalized_phone = $2 OR phone = $3
+     LIMIT 1`,
+    [rawDigits, norm, String(phoneOrId)],
+  );
+  return (result.rowCount ?? 0) > 0;
+}
+
+export async function listCommunityResources() {
+  const result = await pool.query(
+    `SELECT id, title, url, description, keywords, updated_at
+     FROM community_resources
+     ORDER BY id ASC`,
+  );
+  return result.rows;
+}
+
+export async function getCommunityResource(id) {
+  const result = await pool.query(
+    `SELECT id, title, url, description, keywords, updated_at
+     FROM community_resources
+     WHERE id = $1`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
+export async function upsertCommunityResource(id, { title, url, description, keywords }) {
+  const result = await pool.query(
+    `INSERT INTO community_resources (id, title, url, description, keywords, updated_at)
+     VALUES ($1, $2, $3, $4, $5, now())
+     ON CONFLICT (id) DO UPDATE SET
+       title = coalesce(EXCLUDED.title, community_resources.title),
+       url = coalesce(EXCLUDED.url, community_resources.url),
+       description = coalesce(EXCLUDED.description, community_resources.description),
+       keywords = coalesce(EXCLUDED.keywords, community_resources.keywords),
+       updated_at = now()
+     RETURNING id, title, url, description, keywords, updated_at`,
+    [id, title, url, description, Array.isArray(keywords) ? keywords : []],
+  );
+  return result.rows[0];
+}
+
 export async function markModerationAlertNotified(alertId, adminMessageId) {
   await pool.query(
     `UPDATE moderation_alerts
