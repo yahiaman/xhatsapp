@@ -74,6 +74,59 @@ function containsTerm(text, term) {
   return new RegExp(`(^|[^a-z0-9])${escapeRegex(term)}([^a-z0-9]|$)`, 'i').test(text);
 }
 
+const agencyRegexCache = new Map();
+
+export function buildAgencyRegex(agencyName) {
+  const normalized = normalizeForModeration(agencyName);
+  if (!normalized) return null;
+
+  if (agencyRegexCache.has(normalized)) {
+    return agencyRegexCache.get(normalized);
+  }
+
+  if (!LATIN_TERM.test(normalized)) {
+    agencyRegexCache.set(normalized, null);
+    return null;
+  }
+
+  const tokens = normalized.split(/[^a-z0-9]+/).filter(Boolean);
+  if (!tokens.length) {
+    agencyRegexCache.set(normalized, null);
+    return null;
+  }
+
+  const tokenPatterns = tokens.map((token, index) => {
+    if (index === 0 && (token === 'al' || token === 'el')) {
+      return '(?:al|el)';
+    }
+
+    if (token.endsWith('s') && !token.endsWith('ss')) {
+      const base = token.slice(0, -1);
+      return `${escapeRegex(base)}s?`;
+    }
+    if (token.length >= 4 && !token.endsWith('s')) {
+      return `${escapeRegex(token)}s?`;
+    }
+
+    return escapeRegex(token);
+  });
+
+  const body = tokenPatterns.join("[\\s\\-_']*");
+  const regex = new RegExp(`(^|[^a-z0-9])${body}([^a-z0-9]|$)`, 'i');
+  agencyRegexCache.set(normalized, regex);
+  return regex;
+}
+
+export function containsAgency(text, agencyName) {
+  if (!text || !agencyName) return false;
+  const regex = buildAgencyRegex(agencyName);
+  if (regex) {
+    return regex.test(text);
+  }
+  const normalized = normalizeForModeration(agencyName);
+  return text.includes(normalized);
+}
+
 function matches(text, terms) {
   return terms.filter((term) => containsTerm(text, term));
 }
@@ -110,7 +163,7 @@ export function detectModeration(value, customAgencies = [], customKeywords = {}
     const normalized = normalizeForModeration(agency);
     if (!normalized) continue;
     if (normalized === 'nusuk' || normalized === 'entraide nusuk hajj' || normalized === 'sans agence' || normalized === 'ithraa al khair') continue;
-    if (containsTerm(text, normalized)) {
+    if (containsAgency(text, agency)) {
       matchedAgencies.push(agency);
     }
   }

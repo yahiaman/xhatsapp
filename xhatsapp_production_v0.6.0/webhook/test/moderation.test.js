@@ -94,6 +94,81 @@ test('respects exceptions for Saudi platforms and community terms', () => {
   assert.equal(franceNusuk.isForbiddenAgency, true);
 });
 
+test('detects agency names with flexible separators (hyphens, spaces, concatenated)', () => {
+  // Hyphen separator
+  const amanaHyphen = detectModeration('Quelqu un connait Al-Amana ?');
+  assert.equal(amanaHyphen.flagged, true);
+  assert.equal(amanaHyphen.isForbiddenAgency, true);
+  assert.equal(amanaHyphen.matchedAgency, 'Al Amana');
+
+  const bookingHyphen = detectModeration('Voir les offres sur Booking-Makkah');
+  assert.equal(bookingHyphen.flagged, true);
+  assert.equal(bookingHyphen.isForbiddenAgency, true);
+  assert.equal(bookingHyphen.matchedAgency, 'Booking Makkah');
+
+  const voieHyphen = detectModeration('C est valide avec Voie-Directe pour le voyage');
+  assert.equal(voieHyphen.flagged, true);
+  assert.equal(voieHyphen.isForbiddenAgency, true);
+  assert.equal(voieHyphen.matchedAgency, 'Voie Directe');
+
+  // Concatenated / joined without spaces
+  const amanaJoined = detectModeration('Je suis passe par alamana pour la omra');
+  assert.equal(amanaJoined.flagged, true);
+  assert.equal(amanaJoined.isForbiddenAgency, true);
+  assert.equal(amanaJoined.matchedAgency, 'Al Amana');
+
+  const bookingJoined = detectModeration('Regardez sur bookingmakkah');
+  assert.equal(bookingJoined.flagged, true);
+  assert.equal(bookingJoined.isForbiddenAgency, true);
+  assert.equal(bookingJoined.matchedAgency, 'Booking Makkah');
+});
+
+test('detects agency names with singular / plural variations', () => {
+  // Registered as "Assafar Voyages" -> user writes "Assafar Voyage" (singular)
+  const assafarSingular = detectModeration('Des retours sur Assafar Voyage ?');
+  assert.equal(assafarSingular.flagged, true);
+  assert.equal(assafarSingular.isForbiddenAgency, true);
+  assert.equal(assafarSingular.matchedAgency, 'Assafar Voyages');
+
+  // Registered as "Nabi Voyages" -> user writes "Nabi Voyage" (singular)
+  const nabiSingular = detectModeration('Mon frere est chez Nabi Voyage');
+  assert.equal(nabiSingular.flagged, true);
+  assert.equal(nabiSingular.isForbiddenAgency, true);
+  assert.equal(nabiSingular.matchedAgency, 'Nabi Voyages');
+
+  // Registered as "Voyages Essalam" -> user writes "Voyage Essalam" (singular)
+  const essalamSingular = detectModeration('J ai reserve chez Voyage Essalam');
+  assert.equal(essalamSingular.flagged, true);
+  assert.equal(essalamSingular.isForbiddenAgency, true);
+  assert.equal(essalamSingular.matchedAgency, 'Voyages Essalam');
+
+  // Registered as "Djamila Voyage" -> user writes "Djamila Voyages" (plural)
+  const djamilaPlural = detectModeration('Qui a teste Djamila Voyages ?');
+  assert.equal(djamilaPlural.flagged, true);
+  assert.equal(djamilaPlural.isForbiddenAgency, true);
+  assert.equal(djamilaPlural.matchedAgency, 'Djamila Voyage');
+});
+
+test('detects agency names with Al / El article variations', () => {
+  // Registered as "Al Amana" -> user writes "El-Amana" or "El Amana"
+  const elAmana = detectModeration('Qui connait El-Amana ?');
+  assert.equal(elAmana.flagged, true);
+  assert.equal(elAmana.isForbiddenAgency, true);
+  assert.equal(elAmana.matchedAgency, 'Al Amana');
+
+  // Registered as "Al Sirate Voyages" -> user writes "El-Sirate Voyage" (El + hyphen + singular)
+  const elSirate = detectModeration('Avis sur El-Sirate Voyage pour le depart ?');
+  assert.equal(elSirate.flagged, true);
+  assert.equal(elSirate.isForbiddenAgency, true);
+  assert.equal(elSirate.matchedAgency, 'Al Sirate Voyages');
+
+  // Registered as "El Hayat" -> user writes "Al Hayat"
+  const alHayat = detectModeration('Je pense partir avec Al Hayat');
+  assert.equal(alHayat.flagged, true);
+  assert.equal(alHayat.isForbiddenAgency, true);
+  assert.equal(alHayat.matchedAgency, 'El Hayat');
+});
+
 test('detects the Arabic hotel price example', () => {
   const result = detectModeration('متوفر فندق قريب بسعر 500 ريال');
   assert.equal(result.flagged, true);
