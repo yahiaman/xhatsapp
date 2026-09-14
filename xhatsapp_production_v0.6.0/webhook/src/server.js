@@ -972,6 +972,24 @@ async function handleCommunityCommand(message, command) {
     }
   }
 
+  if (command.type === 'update_resource_url') {
+    const existing = await getCommunityResource(command.id);
+    if (!existing) {
+      await openWa.sendText(
+        message.chatId,
+        `⚠️ Ressource inconnue : *${command.id}*.\n\nRessources modifiables : *youtube*, *site*, *faq*, *hotels*, *packages*.\nExemple : *LIEN youtube https://www.youtube.com/@votrechaine*`,
+      ).catch(() => {});
+      return { handled: false, reason: 'resource_not_found' };
+    }
+    await upsertCommunityResource(command.id, { url: command.url });
+    await reloadCommunityResources();
+    await openWa.sendText(
+      message.chatId,
+      `✅ *LIEN MIS À JOUR AVEC SUCCÈS*\n───────────────────────────\n📌 *${existing.title}*\n👉 Nouveau lien : ${command.url}\n\nℹ️ _Ce nouveau lien sera désormais automatiquement partagé lorsqu'un modérateur mentionnera cette ressource._`,
+    ).catch(() => {});
+    return { handled: true, status: 'resource_url_updated' };
+  }
+
   return { handled: false, reason: 'unknown_community_command' };
 }
 

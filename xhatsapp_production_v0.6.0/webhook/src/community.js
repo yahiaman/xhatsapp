@@ -102,6 +102,15 @@ export function parseCommunityCommand(rawText) {
     return { type: 'flash', message: flashBody };
   }
 
+  const updateResourceMatch = trimmed.match(/^(?:SET\s+LIEN|LIEN|URL)\s+([a-zA-Z0-9_\-]+)\s+(https?:\/\/[^\s]+)$/i);
+  if (updateResourceMatch) {
+    return {
+      type: 'update_resource_url',
+      id: updateResourceMatch[1].toLowerCase(),
+      url: updateResourceMatch[2].trim(),
+    };
+  }
+
   const shortcutMatch = trimmed.match(/^!([a-zA-Z0-9_\-]+)$/);
   if (shortcutMatch) {
     return {

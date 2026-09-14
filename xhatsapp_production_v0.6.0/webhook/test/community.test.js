@@ -293,6 +293,14 @@ test('parses STATUT, BAN, UNBAN, and Resource commands', async () => {
   assert.deepEqual(parseCommunityCommand('!youtube'), { type: 'shortcut', shortcut: 'youtube' });
   assert.deepEqual(parseCommunityCommand('!site'), { type: 'shortcut', shortcut: 'site' });
   assert.deepEqual(parseCommunityCommand('!hotels'), { type: 'shortcut', shortcut: 'hotels' });
+  assert.deepEqual(
+    parseCommunityCommand('LIEN youtube https://www.youtube.com/@enh'),
+    { type: 'update_resource_url', id: 'youtube', url: 'https://www.youtube.com/@enh' },
+  );
+  assert.deepEqual(
+    parseCommunityCommand('SET LIEN site https://entraide-nusuk-hajj.com'),
+    { type: 'update_resource_url', id: 'site', url: 'https://entraide-nusuk-hajj.com' },
+  );
 
   // isPhoneBanned check
   const banned = [
