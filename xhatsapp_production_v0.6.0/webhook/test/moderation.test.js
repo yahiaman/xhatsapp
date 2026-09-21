@@ -79,6 +79,14 @@ test('detects forbidden agencies from dictionary with auto-deletion flag', () =>
   assert.equal(custom.flagged, true);
   assert.equal(custom.isForbiddenAgency, true);
   assert.equal(custom.matchedAgency, 'Agence Inconnue 2026');
+
+  const goMakkah = detectModeration('Vous connaissez Go-Makkah ?', ['Go-Makkah']);
+  assert.equal(goMakkah.flagged, true);
+  assert.equal(goMakkah.isForbiddenAgency, true);
+
+  const bonHajj = detectModeration('J ai vu Bon Hajj & Omra sur internet', ['Bon Hajj & Omra']);
+  assert.equal(bonHajj.flagged, true);
+  assert.equal(bonHajj.isForbiddenAgency, true);
 });
 
 test('respects exceptions for Saudi platforms and community terms', () => {

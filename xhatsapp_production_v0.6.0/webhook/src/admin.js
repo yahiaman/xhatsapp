@@ -97,10 +97,23 @@ export function parseResourceInput(body) {
   if (!url || !/^https?:\/\/.+/i.test(url)) return null;
   const title = body?.title ? String(body.title).trim().slice(0, 100) : null;
   const description = body?.description ? String(body.description).trim().slice(0, 500) : null;
-  const keywords = Array.isArray(body?.keywords)
-    ? body.keywords.map((k) => String(k).trim()).filter(Boolean)
+  let keywords = null;
+  if (Array.isArray(body?.keywords)) {
+    keywords = body.keywords.map((k) => String(k).trim()).filter(Boolean);
+  } else if (typeof body?.keywords === 'string') {
+    keywords = body.keywords.split(',').map((k) => k.trim()).filter(Boolean);
+  }
+  const rawId = body?.id
+    ? String(body.id)
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .trim()
+        .toLowerCase()
+        .replace(/^!+/, '')
+        .replace(/[^a-z0-9_-]/g, '')
     : null;
-  return { url, title, description, keywords };
+  const id = rawId && rawId.length >= 2 && rawId.length <= 50 ? rawId : null;
+  return { id, url, title, description, keywords };
 }
 
 export const adminHtml = `<!doctype html>
@@ -208,32 +221,74 @@ export const adminHtml = `<!doctype html>
   </div>
 
   <div id="panel-resources" hidden>
-    <p class="muted"><strong>Ressources & Liens officiels Nusuk :</strong> ces liens sont partagés automatiquement dans les groupes surveillés dès qu'un administrateur/modérateur mentionne la ressource (ou tape !youtube, !site, !faq, !hotels, !packages). Modifiez l'URL de votre choix ci-dessous :</p>
+    <p class="muted"><strong>Ressources & Liens officiels Nusuk :</strong> ces liens sont partagés automatiquement dans les groupes surveillés dès qu'un administrateur/modérateur tape la commande correspondante (ex: <code>!youtube</code>, <code>!site</code>, <code>!faq</code>, <code>!hotels</code>, <code>!packages</code>, <code>!retouche</code>, <code>!soeurs</code>) ou mentionne les mots-clés associés.</p>
+    <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px;margin-bottom:14px">
+      <h3 style="margin:0 0 10px 0;font-size:1rem">➕ Ajouter une nouvelle mention / ressource</h3>
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px;margin-bottom:10px">
+        <div>
+          <label for="new-res-id"><small><strong>Clé / Commande (ex: soeurs)</strong></small></label>
+          <input id="new-res-id" type="text" placeholder="ex: guide (déclenche !guide)">
+        </div>
+        <div>
+          <label for="new-res-title"><small><strong>Titre de la ressource</strong></small></label>
+          <input id="new-res-title" type="text" placeholder="ex: Guide Officiel Nusuk">
+        </div>
+        <div>
+          <label for="new-res-url"><small><strong>URL officielle (https://...)</strong></small></label>
+          <input id="new-res-url" type="text" placeholder="https://...">
+        </div>
+        <div>
+          <label for="new-res-desc"><small><strong>Description courte</strong></small></label>
+          <input id="new-res-desc" type="text" placeholder="ex: Guide complet PDF">
+        </div>
+        <div>
+          <label for="new-res-keywords"><small><strong>Mots-clés (séparés par virgules)</strong></small></label>
+          <input id="new-res-keywords" type="text" placeholder="ex: guide, tuto, pdf">
+        </div>
+      </div>
+      <button id="add-resource">Ajouter la ressource</button>
+    </div>
+    <input id="search-resource" type="text" placeholder="Filtrer les ressources..." style="max-width:320px;margin-bottom:10px">
     <div style="overflow:auto;border:1px solid #dbe4e1;border-radius:8px">
       <table>
-        <thead><tr><th>Ressource</th><th>Titre & Description</th><th>URL officielle</th><th>Action</th></tr></thead>
+        <thead><tr><th>Commande</th><th>Titre & Description</th><th>Mots-clés</th><th>URL officielle</th><th>Action</th></tr></thead>
         <tbody id="resources"></tbody>
       </table>
     </div>
   </div>
 
-  <h2>Messages automatiques de la communauté</h2>
-  <p class="muted">Messages personnalisés envoyés automatiquement en message privé (DM) sur WhatsApp aux pèlerins.</p>
+  <h2>Messages automatiques du système & de la communauté</h2>
+  <p class="muted">Gérez ici l’ensemble des messages automatiques diffusés par Xhatsapp (ouverture/fermeture globales des groupes, rappels de modération, et messages privés aux pèlerins).</p>
   <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:16px;margin-bottom:18px">
     <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
+      <label for="template-open"><strong>☀️ Message d’ouverture matinale (Global)</strong><br><span class="muted" style="font-size:0.85rem">Diffusé automatiquement dans <em>tous les groupes surveillés</em> lors du déverrouillage matinal :</span></label>
+      <textarea id="template-open" style="min-height:140px;margin:8px 0;font-size:0.88rem"></textarea>
+      <button id="save-open-message">Enregistrer le message d’ouverture</button>
+    </div>
+    <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
+      <label for="template-close"><strong>🌙 Message de fermeture nocturne (Global)</strong><br><span class="muted" style="font-size:0.85rem">Diffusé automatiquement dans <em>tous les groupes surveillés</em> avant le verrouillage nocturne :</span></label>
+      <textarea id="template-close" style="min-height:140px;margin:8px 0;font-size:0.88rem"></textarea>
+      <button id="save-close-message">Enregistrer le message de fermeture</button>
+    </div>
+    <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
+      <label for="template-agency-warning"><strong>⚠️ Rappel de neutralité agence</strong><br><span class="muted" style="font-size:0.85rem">Envoyé dans le groupe lorsqu’un nom d’agence interdite est cité et supprimé :</span></label>
+      <textarea id="template-agency-warning" style="min-height:140px;margin:8px 0;font-size:0.88rem"></textarea>
+      <button id="save-agency-warning">Enregistrer le rappel de neutralité</button>
+    </div>
+    <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
       <label for="template-onboarding"><strong>📥 Message de bienvenue (Onboarding DM)</strong><br><span class="muted" style="font-size:0.85rem">Envoyé en privé dès qu'un nouveau pèlerin est accepté dans un groupe surveillé :</span></label>
-      <textarea id="template-onboarding" style="min-height:160px;margin:8px 0;font-size:0.88rem"></textarea>
+      <textarea id="template-onboarding" style="min-height:140px;margin:8px 0;font-size:0.88rem"></textarea>
       <button id="save-onboarding">Enregistrer le message de bienvenue</button>
     </div>
     <div style="background:#f8faf9;border:1px solid #dbe4e1;border-radius:10px;padding:14px">
-      <label for="template-refusal"><strong>🚫 Message de refus de doublon (DM privé)</strong><br><span class="muted" style="font-size:0.85rem">Variables : <code>{newGroupName}</code> (groupe demandé) et <code>{existingGroupName}</code> (groupe existant) :</span></label>
-      <textarea id="template-refusal" style="min-height:160px;margin:8px 0;font-size:0.88rem"></textarea>
+      <label for="template-refusal"><strong>🚫 Message de refus de doublon (DM privé)</strong><br><span class="muted" style="font-size:0.85rem">Variables : <code>{newGroupName}</code> et <code>{existingGroupName}</code> :</span></label>
+      <textarea id="template-refusal" style="min-height:140px;margin:8px 0;font-size:0.88rem"></textarea>
       <button id="save-refusal">Enregistrer le message de refus</button>
     </div>
   </div>
 
   <h2>Récapitulatif quotidien</h2><p class="muted">Génération locale à 20 h 10. Le brouillon consolidé doit être validé dans Groupe_admin avec GO RECAP &lt;CODE&gt;.</p><label for="recap-signature">Signature ajoutée en fin de récapitulatif</label><textarea id="recap-signature" maxlength="600" placeholder="Signature à définir ultérieurement"></textarea><button id="save-recap">Enregistrer la signature</button>
-  <h2>Ouverture et fermeture automatiques</h2><p class="muted">Jours : 1=lundi … 7=dimanche. À la fermeture, le message est envoyé avant le verrouillage. À l’ouverture, le groupe est déverrouillé avant le message.</p><div style="overflow:auto"><table><thead><tr><th>Groupe</th><th>Activé</th><th>Jours</th><th>Ouverture</th><th>Fermeture</th><th>Message d’ouverture</th><th>Message de clôture</th><th></th></tr></thead><tbody id="schedules"></tbody></table></div></section>
+  <h2>Ouverture et fermeture automatiques</h2><p class="muted">Jours : 1=lundi … 7=dimanche. Les messages d’ouverture et de clôture sont désormais centralisés ci-dessus. À la fermeture, le groupe est verrouillé. À l’ouverture, le groupe est déverrouillé.</p><div style="overflow:auto"><table><thead><tr><th>Groupe</th><th>Activé</th><th>Jours</th><th>Ouverture</th><th>Fermeture</th><th>Actions</th></tr></thead><tbody id="schedules"></tbody></table></div></section>
 </main><script>
 const fields=['enabled','isTest','isMonitored','isAdmin','allowAutoReply','allowBroadcast','allowRecap'];
 const labels={enabled:'Actif',isTest:'Test',isMonitored:'Surveillance',isAdmin:'Admin',allowAutoReply:'Réponse auto',allowBroadcast:'Diffusion',allowRecap:'Récapitulatif'};
@@ -247,11 +302,11 @@ const donationBody=document.getElementById('donations'), donationInput=document.
 const adBody=document.getElementById('ads'), adInput=document.getElementById('new-ad-term'), adSearch=document.getElementById('search-ad');
 const modBody=document.getElementById('mods'), modPhoneInput=document.getElementById('new-mod-phone'), modLabelInput=document.getElementById('new-mod-label'), modSearch=document.getElementById('search-mod');
 const blacklistBody=document.getElementById('blacklist'), banPhoneInput=document.getElementById('new-ban-phone'), banReasonInput=document.getElementById('new-ban-reason'), banSearch=document.getElementById('search-ban');
-const resourceBody=document.getElementById('resources');
+const resourceBody=document.getElementById('resources'), resourceSearch=document.getElementById('search-resource');
 let token=sessionStorage.getItem('xhatsapp_admin_token')||'';
 let allAgencies=[], allKeywords=[], allModerators=[], allBanned=[], allResources=[];
 
-const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.','invalid_moderator_phone':'Numéro de téléphone invalide (au moins 8 chiffres requis).','invalid_ban_phone':'Numéro de téléphone invalide (au moins 6 chiffres requis).','ban_add_failed':'Échec de l’enregistrement du bannissement.','exempt_moderator_cannot_be_banned':'Ce numéro figure dans la liste des modérateurs / exemptés et ne peut pas être banni.','invalid_resource_url':'URL invalide (doit commencer par http:// ou https://).','resource_update_failed':'Échec de la mise à jour de la ressource.'};
+const errLabels={'agency_already_exists':'Cette agence existe déjà dans le dictionnaire.','agency_add_failed':'Échec de l’enregistrement de l’agence.','keyword_already_exists':'Ce mot-clé existe déjà dans cette catégorie.','keyword_add_failed':'Échec de l’enregistrement du mot-clé.','invalid_agency':'Nom d’agence invalide.','invalid_keyword':'Mot-clé invalide.','invalid_moderator_phone':'Numéro de téléphone invalide (au moins 8 chiffres requis).','invalid_ban_phone':'Numéro de téléphone invalide (au moins 6 chiffres requis).','ban_add_failed':'Échec de l’enregistrement du bannissement.','exempt_moderator_cannot_be_banned':'Ce numéro figure dans la liste des modérateurs / exemptés et ne peut pas être banni.','invalid_resource_url':'URL invalide (doit commencer par http:// ou https://).','resource_update_failed':'Échec de la mise à jour de la ressource.','resource_already_exists':'Cette ressource existe déjà dans la liste.','resource_create_failed':'Échec de la création de la ressource.','resource_delete_failed':'Échec de la suppression de la ressource.','invalid_resource':'Paramètres de ressource invalides.'};
 function headers(){return {'Authorization':'Bearer '+token,'Content-Type':'application/json'};}
 function status(text,error=false){statusBox.textContent=text;statusBox.className='status '+(error?'error':'ok');}
 async function api(path,options={}){const response=await fetch(path,{...options,headers:{...headers(),...(options.headers||{})}});if(response.status===401){logout();throw new Error('Jeton refusé');}const data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(errLabels[data.error]||data.error||('HTTP '+response.status));return data;}
@@ -280,7 +335,7 @@ tabResourcesBtn.onclick=()=>selectTab('resources');
 function checkbox(group,key){const cell=document.createElement('td');cell.dataset.label=labels[key];const input=document.createElement('input');input.type='checkbox';input.checked=group[key];input.dataset.key=key;cell.appendChild(input);return cell;}
 function render(groups){tbody.replaceChildren();for(const group of groups){const row=document.createElement('tr');row.dataset.id=group.id;const name=document.createElement('td');name.className='name';name.dataset.label='Groupe';name.textContent=group.name;row.appendChild(name);const ref=document.createElement('td');ref.dataset.label='Référence';ref.textContent=group.reference;row.appendChild(ref);for(const key of fields)row.appendChild(checkbox(group,key));const action=document.createElement('td');const save=document.createElement('button');save.textContent='Enregistrer';save.onclick=()=>saveRow(row);action.appendChild(save);row.appendChild(action);tbody.appendChild(row);}}
 function scheduleInput(value,type='text'){const input=document.createElement('input');input.type=type;input.value=value;return input;}
-function renderSchedules(items){scheduleBody.replaceChildren();for(const item of items){const row=document.createElement('tr');row.dataset.id=item.groupId;const name=document.createElement('td');name.dataset.label='Groupe';name.textContent=item.groupName+' ('+item.groupReference+')';row.appendChild(name);const enabled=document.createElement('td');enabled.dataset.label='Activé';const enabledInput=document.createElement('input');enabledInput.type='checkbox';enabledInput.checked=item.enabled;enabledInput.dataset.schedule='enabled';enabled.appendChild(enabledInput);row.appendChild(enabled);const days=document.createElement('td');days.dataset.label='Jours';const daysInput=scheduleInput(item.weekdays.join(','));daysInput.dataset.schedule='weekdays';days.appendChild(daysInput);row.appendChild(days);for(const [key,label] of [['openTime','Ouverture'],['closeTime','Fermeture']]){const cell=document.createElement('td');cell.dataset.label=label;const input=scheduleInput(item[key],'time');input.dataset.schedule=key;cell.appendChild(input);row.appendChild(cell);}for(const [key,label] of [['openMessage','Message ouverture'],['closeMessage','Message clôture']]){const cell=document.createElement('td');cell.dataset.label=label;const area=document.createElement('textarea');area.value=item[key];area.dataset.schedule=key;cell.appendChild(area);row.appendChild(cell);}const action=document.createElement('td');const save=document.createElement('button');save.textContent='Enregistrer';save.onclick=()=>saveSchedule(row);const check=document.createElement('button');check.className='secondary';check.textContent='Vérifier droits';check.onclick=()=>checkRights(row);action.append(save,check);row.appendChild(action);scheduleBody.appendChild(row);}}
+function renderSchedules(items){scheduleBody.replaceChildren();for(const item of items){const row=document.createElement('tr');row.dataset.id=item.groupId;const name=document.createElement('td');name.dataset.label='Groupe';name.textContent=item.groupName+' ('+item.groupReference+')';row.appendChild(name);const enabled=document.createElement('td');enabled.dataset.label='Activé';const enabledInput=document.createElement('input');enabledInput.type='checkbox';enabledInput.checked=item.enabled;enabledInput.dataset.schedule='enabled';enabled.appendChild(enabledInput);row.appendChild(enabled);const days=document.createElement('td');days.dataset.label='Jours';const daysInput=scheduleInput(item.weekdays.join(','));daysInput.dataset.schedule='weekdays';days.appendChild(daysInput);row.appendChild(days);for(const [key,label] of [['openTime','Ouverture'],['closeTime','Fermeture']]){const cell=document.createElement('td');cell.dataset.label=label;const input=scheduleInput(item[key],'time');input.dataset.schedule=key;cell.appendChild(input);row.appendChild(cell);}const action=document.createElement('td');const save=document.createElement('button');save.textContent='Enregistrer';save.onclick=()=>saveSchedule(row);const check=document.createElement('button');check.className='secondary';check.textContent='Vérifier droits';check.onclick=()=>checkRights(row);action.append(save,check);row.appendChild(action);scheduleBody.appendChild(row);}}
 
 function renderAgencies(items){
   agencyBody.replaceChildren();
@@ -359,8 +414,11 @@ async function loadTemplates(){
     const data=await api('/admin/api/templates');
     if(data.templates){
       for(const t of data.templates){
-        if(t.id==='onboarding_dm') document.getElementById('template-onboarding').value=t.content;
-        if(t.id==='duplicate_refusal_dm') document.getElementById('template-refusal').value=t.content;
+        if(t.id==='group_open_message'){const el=document.getElementById('template-open');if(el)el.value=t.content;}
+        if(t.id==='group_close_message'){const el=document.getElementById('template-close');if(el)el.value=t.content;}
+        if(t.id==='agency_citation_warning'){const el=document.getElementById('template-agency-warning');if(el)el.value=t.content;}
+        if(t.id==='onboarding_dm'){const el=document.getElementById('template-onboarding');if(el)el.value=t.content;}
+        if(t.id==='duplicate_refusal_dm'){const el=document.getElementById('template-refusal');if(el)el.value=t.content;}
       }
     }
   }catch(err){console.error(err);}
@@ -402,17 +460,35 @@ async function loadBlacklist(){
 
 function renderResources(items){
   resourceBody.replaceChildren();
-  for(const res of items){
+  const filter=resourceSearch?resourceSearch.value.trim().toLowerCase():'';
+  const filtered=items.filter(r=>r.id.toLowerCase().includes(filter)||(r.title||'').toLowerCase().includes(filter)||(r.url||'').toLowerCase().includes(filter)||(Array.isArray(r.keywords)?r.keywords.join(' '):'').toLowerCase().includes(filter));
+  for(const res of filtered){
     const row=document.createElement('tr');
     const name=document.createElement('td');
-    name.innerHTML='<strong>'+(res.id==='youtube'?'📺 YouTube':res.id==='site'?'🌐 Site Internet':res.id==='faq'?'❓ FAQ':res.id==='hotels'?'🗺️ Hôtels':res.id==='packages'?'📦 Packages':res.id)+'</strong><br><small class="muted">Clé: <code>'+res.id+'</code></small>';
+    name.innerHTML='<strong><code>!'+res.id+'</code></strong>';
     const desc=document.createElement('td');
-    desc.innerHTML='<strong>'+(res.title||res.id)+'</strong><br><small class="muted">'+(res.description||'')+'</small>';
+    const titleInput=document.createElement('input');
+    titleInput.type='text';
+    titleInput.value=res.title||'';
+    titleInput.placeholder='Titre';
+    titleInput.style.marginBottom='4px';
+    const descInput=document.createElement('input');
+    descInput.type='text';
+    descInput.value=res.description||'';
+    descInput.placeholder='Description courte';
+    desc.append(titleInput,descInput);
+    const kwCell=document.createElement('td');
+    const kwInput=document.createElement('input');
+    kwInput.type='text';
+    kwInput.value=Array.isArray(res.keywords)?res.keywords.join(', '):'';
+    kwInput.placeholder='mots-clés séparés par virgules';
+    kwCell.appendChild(kwInput);
     const urlCell=document.createElement('td');
     const urlInput=document.createElement('input');
     urlInput.type='text';
     urlInput.value=res.url||'';
-    urlInput.style.minWidth='280px';
+    urlInput.placeholder='https://...';
+    urlInput.style.minWidth='220px';
     urlCell.appendChild(urlInput);
     const action=document.createElement('td');
     const saveBtn=document.createElement('button');
@@ -424,13 +500,32 @@ function renderResources(items){
         return;
       }
       try{
-        await api('/admin/api/resources/'+encodeURIComponent(res.id),{method:'PUT',body:JSON.stringify({url:newUrl})});
-        status('Lien pour « '+res.title+' » mis à jour avec succès');
+        await api('/admin/api/resources/'+encodeURIComponent(res.id),{
+          method:'PUT',
+          body:JSON.stringify({
+            title:titleInput.value.trim(),
+            description:descInput.value.trim(),
+            url:newUrl,
+            keywords:kwInput.value.split(',').map(k=>k.trim()).filter(Boolean)
+          })
+        });
+        status('Ressource « !'+res.id+' » mise à jour avec succès');
         await loadResources();
       }catch(err){status(err.message,true);}
     };
-    action.appendChild(saveBtn);
-    row.append(name,desc,urlCell,action);
+    const delBtn=document.createElement('button');
+    delBtn.className='danger';
+    delBtn.textContent='Supprimer';
+    delBtn.onclick=async()=>{
+      if(!confirm('Supprimer définitivement la ressource « !'+res.id+' » ?'))return;
+      try{
+        await api('/admin/api/resources/'+encodeURIComponent(res.id),{method:'DELETE'});
+        status('Ressource « !'+res.id+' » supprimée');
+        await loadResources();
+      }catch(err){status(err.message,true);}
+    };
+    action.append(saveBtn,delBtn);
+    row.append(name,desc,kwCell,urlCell,action);
     resourceBody.appendChild(row);
   }
 }
@@ -453,7 +548,7 @@ async function load(){
 }
 
 async function saveRow(row){const body={};for(const input of row.querySelectorAll('input[data-key]'))body[input.dataset.key]=input.checked;if(body.allowAutoReply||body.allowBroadcast||body.allowRecap){if(!confirm('Confirmer les autorisations automatiques sélectionnées pour ce groupe ?'))return;body.confirm=true;}try{await api('/admin/api/groups/'+encodeURIComponent(row.dataset.id),{method:'PUT',body:JSON.stringify(body)});status('Configuration enregistrée');await load();}catch(error){status(error.message,true);}}
-async function saveSchedule(row){const get=(key)=>row.querySelector('[data-schedule="'+key+'"]');const body={enabled:get('enabled').checked,timezone:'Europe/Paris',weekdays:get('weekdays').value.split(',').map(value=>Number(value.trim())),openTime:get('openTime').value,closeTime:get('closeTime').value,openMessage:get('openMessage').value,closeMessage:get('closeMessage').value};if(body.enabled){if(!confirm('Activer ces horaires et autoriser Xhatsapp à verrouiller/déverrouiller ce groupe ? Selon l’heure actuelle, la première action peut démarrer dans les 30 secondes.'))return;body.confirm=true;}try{await api('/admin/api/schedules/'+encodeURIComponent(row.dataset.id),{method:'PUT',body:JSON.stringify(body)});status('Horaires enregistrés');await load();}catch(error){status(error.message,true);}}
+async function saveSchedule(row){const get=(key)=>row.querySelector('[data-schedule="'+key+'"]');const body={enabled:get('enabled').checked,timezone:'Europe/Paris',weekdays:get('weekdays').value.split(',').map(value=>Number(value.trim())),openTime:get('openTime').value,closeTime:get('closeTime').value};if(body.enabled){if(!confirm('Activer ces horaires et autoriser Xhatsapp à verrouiller/déverrouiller ce groupe ? Selon l’heure actuelle, la première action peut démarrer dans les 30 secondes.'))return;body.confirm=true;}try{await api('/admin/api/schedules/'+encodeURIComponent(row.dataset.id),{method:'PUT',body:JSON.stringify(body)});status('Horaires enregistrés');await load();}catch(error){status(error.message,true);}}
 async function checkRights(row){if(!confirm('Vérifier les droits administrateur OpenWA sans changer l’état du groupe ?'))return;try{await api('/admin/api/schedules/'+encodeURIComponent(row.dataset.id)+'/check',{method:'POST',body:JSON.stringify({confirm:true})});status('Droits administrateur vérifiés');}catch(error){status(error.message,true);}}
 
 agencySearch.oninput=()=>renderAgencies(allAgencies);
@@ -461,6 +556,7 @@ donationSearch.oninput=()=>renderKeywords('donation', donationBody, donationSear
 adSearch.oninput=()=>renderKeywords('advertising', adBody, adSearch);
 modSearch.oninput=()=>renderModerators(allModerators);
 banSearch.oninput=()=>renderBlacklist(allBanned);
+resourceSearch.oninput=()=>renderResources(allResources);
 
 document.getElementById('add-agency').onclick=async()=>{
   const name=agencyInput.value.trim();if(!name)return;
@@ -503,6 +599,53 @@ document.getElementById('add-ban').onclick=async()=>{
     status('Numéro « '+phone+' » banni'+kickedMsg);
     await loadBlacklist();
   }catch(err){status(err.message,true);}
+};
+
+document.getElementById('add-resource').onclick=async()=>{
+  const rawId=document.getElementById('new-res-id').value.trim();
+  const title=document.getElementById('new-res-title').value.trim();
+  const url=document.getElementById('new-res-url').value.trim();
+  const desc=document.getElementById('new-res-desc').value.trim();
+  const kw=document.getElementById('new-res-keywords').value.trim();
+  if(!rawId){status('La commande / clé est requise (ex: soeurs)',true);return;}
+  if(!url||(!url.startsWith('http://')&&!url.startsWith('https://'))){status('Une URL valide est requise (commençant par http:// ou https://)',true);return;}
+  try{
+    await api('/admin/api/resources',{
+      method:'POST',
+      body:JSON.stringify({
+        id:rawId,
+        title:title||rawId,
+        url,
+        description:desc,
+        keywords:kw?kw.split(',').map(k=>k.trim()).filter(Boolean):[]
+      })
+    });
+    document.getElementById('new-res-id').value='';
+    document.getElementById('new-res-title').value='';
+    document.getElementById('new-res-url').value='';
+    document.getElementById('new-res-desc').value='';
+    document.getElementById('new-res-keywords').value='';
+    status('Ressource « !'+rawId+' » créée avec succès');
+    await loadResources();
+  }catch(err){status(err.message,true);}
+};
+
+document.getElementById('save-open-message').onclick=async()=>{
+  const content=document.getElementById('template-open').value.trim();
+  if(!content){status('Le message d’ouverture ne peut pas être vide',true);return;}
+  try{await api('/admin/api/templates/group_open_message',{method:'PUT',body:JSON.stringify({content})});status('Message d’ouverture globale enregistré et synchronisé');}catch(err){status(err.message,true);}
+};
+
+document.getElementById('save-close-message').onclick=async()=>{
+  const content=document.getElementById('template-close').value.trim();
+  if(!content){status('Le message de fermeture ne peut pas être vide',true);return;}
+  try{await api('/admin/api/templates/group_close_message',{method:'PUT',body:JSON.stringify({content})});status('Message de fermeture globale enregistré et synchronisé');}catch(err){status(err.message,true);}
+};
+
+document.getElementById('save-agency-warning').onclick=async()=>{
+  const content=document.getElementById('template-agency-warning').value.trim();
+  if(!content){status('Le rappel de neutralité ne peut pas être vide',true);return;}
+  try{await api('/admin/api/templates/agency_citation_warning',{method:'PUT',body:JSON.stringify({content})});status('Rappel de neutralité agence enregistré');}catch(err){status(err.message,true);}
 };
 
 document.getElementById('save-onboarding').onclick=async()=>{

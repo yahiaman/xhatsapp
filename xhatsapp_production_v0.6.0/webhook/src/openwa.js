@@ -43,6 +43,13 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
         forEveryone: true,
       });
     },
+    listGroups(limit = 500, offset = 0) {
+      return request(
+        'list_groups',
+        'GET',
+        `/groups?limit=${encodeURIComponent(limit)}&offset=${encodeURIComponent(offset)}`,
+      );
+    },
     getGroup(chatId) {
       return request(
         'get_group',

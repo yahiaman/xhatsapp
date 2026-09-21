@@ -9,7 +9,7 @@ export function isValidTimezone(value) {
   }
 }
 
-export function parseSchedule(value) {
+export function parseSchedule(value, defaults = {}) {
   if (!value || typeof value !== 'object') return null;
   const enabled = value.enabled;
   const timezone = String(value.timezone || '').trim();
@@ -18,8 +18,8 @@ export function parseSchedule(value) {
     : [];
   const openTime = String(value.openTime || '').trim();
   const closeTime = String(value.closeTime || '').trim();
-  const openMessage = String(value.openMessage || '').trim();
-  const closeMessage = String(value.closeMessage || '').trim();
+  const openMessage = String(value.openMessage || defaults.openMessage || 'Bonjour, le groupe est ouvert.').trim();
+  const closeMessage = String(value.closeMessage || defaults.closeMessage || 'Bonsoir, le groupe est fermé.').trim();
   if (typeof enabled !== 'boolean'
     || !isValidTimezone(timezone)
     || weekdays.length < 1
@@ -59,6 +59,17 @@ export function dueAction(schedule, date = new Date()) {
 }
 
 export function readAnnounce(settings) {
-  const candidates = [settings?.announce, settings?.settings?.announce, settings?.data?.announce];
-  return candidates.find((value) => typeof value === 'boolean');
+  const candidates = [
+    settings?.announce,
+    settings?.settings?.announce,
+    settings?.data?.announce,
+    settings?.isAnnounce,
+    settings?.data?.isAnnounce,
+  ];
+  for (const val of candidates) {
+    if (typeof val === 'boolean') return val;
+    if (val === 1 || val === '1' || val === 'true') return true;
+    if (val === 0 || val === '0' || val === 'false') return false;
+  }
+  return undefined;
 }

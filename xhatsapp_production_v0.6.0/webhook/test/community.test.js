@@ -346,6 +346,41 @@ test('detects resource mentions and builds cards properly', async () => {
       description: 'Localisation et distances des hôtels.',
       keywords: ['hotel', 'hotels', 'carte', 'cartes des hotels', 'distance'],
     },
+    {
+      id: 'soeurs',
+      title: 'Groupe Telegram Soeurs',
+      url: 'https://t.me/+4GIehhQDBkRlZDA0',
+      description: 'Espace d’entraide pour les soeurs.',
+      keywords: ['soeurs', 'soeur', 'sœurs', 'sœur', 'telegram soeurs', 'groupe soeurs'],
+    },
+    {
+      id: 'serie',
+      title: 'Série Vidéos Nusuk Hajj',
+      url: 'https://www.youtube.com/playlist?list=PL0Ge8X64kTmb0MR92X-5ZPfy_CT4aFDsg',
+      description: 'Série complète de vidéos explicatives.',
+      keywords: ['serie', 'série', 'series', 'séries', 'playlist serie'],
+    },
+    {
+      id: 'podcast',
+      title: 'Podcasts Nusuk Hajj',
+      url: 'https://www.youtube.com/playlist?list=PL0Ge8X64kTmZTaxeV87jJ7hMg-wezmMR2',
+      description: 'Podcasts et émissions audio/vidéo.',
+      keywords: ['podcast', 'podcasts', 'emission'],
+    },
+    {
+      id: 'tuto',
+      title: 'Tutoriels Vidéos Nusuk Hajj',
+      url: 'https://www.youtube.com/playlist?list=PLGwB4htJ5qOU',
+      description: 'Tutoriels pratiques pas-à-pas.',
+      keywords: ['tuto', 'tutos', 'tutoriel', 'tutoriels'],
+    },
+    {
+      id: 'live',
+      title: 'Rediffusions des Lives Nusuk Hajj',
+      url: 'https://www.youtube.com/playlist?list=PLVVFIfeQyKQY',
+      description: 'Rediffusions de tous nos lives.',
+      keywords: ['live', 'lives', 'rediffusion', 'direct'],
+    },
   ];
 
   // 1. Direct shortcuts
@@ -353,6 +388,38 @@ test('detects resource mentions and builds cards properly', async () => {
   assert.ok(matchShortcut);
   assert.equal(matchShortcut.type, 'resource');
   assert.equal(matchShortcut.resource.id, 'youtube');
+
+  const matchSoeurs = detectResourceMention('!soeurs', mockResources);
+  assert.ok(matchSoeurs);
+  assert.equal(matchSoeurs.type, 'resource');
+  assert.equal(matchSoeurs.resource.id, 'soeurs');
+
+  const matchSoeursLigature = detectResourceMention('!sœurs', mockResources);
+  assert.ok(matchSoeursLigature);
+  assert.equal(matchSoeursLigature.type, 'resource');
+  assert.equal(matchSoeursLigature.resource.id, 'soeurs');
+
+  // New playlist shortcuts: !Série (accented/capitalized), !podcast, !tuto, !live
+  const matchSerieAccented = detectResourceMention('!Série', mockResources);
+  assert.ok(matchSerieAccented);
+  assert.equal(matchSerieAccented.type, 'resource');
+  assert.equal(matchSerieAccented.resource.id, 'serie');
+
+  const matchSerieLower = detectResourceMention('!serie', mockResources);
+  assert.ok(matchSerieLower);
+  assert.equal(matchSerieLower.resource.id, 'serie');
+
+  const matchPodcast = detectResourceMention('!podcast', mockResources);
+  assert.ok(matchPodcast);
+  assert.equal(matchPodcast.resource.id, 'podcast');
+
+  const matchTuto = detectResourceMention('!tuto', mockResources);
+  assert.ok(matchTuto);
+  assert.equal(matchTuto.resource.id, 'tuto');
+
+  const matchLive = detectResourceMention('!live', mockResources);
+  assert.ok(matchLive);
+  assert.equal(matchLive.resource.id, 'live');
 
   const matchAll = detectResourceMention('!liens', mockResources);
   assert.ok(matchAll);

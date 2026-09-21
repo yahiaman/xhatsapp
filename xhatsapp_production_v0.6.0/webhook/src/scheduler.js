@@ -3,7 +3,7 @@ import { readAnnounce } from './schedule.js';
 async function setAndVerify(openWa, chatId, announce) {
   await openWa.updateGroupSettings(chatId, { announce });
   let lastReadError = null;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
+  for (let attempt = 0; attempt < 15; attempt += 1) {
     if (attempt > 0) {
       await new Promise((resolve) => setTimeout(resolve, openWa.verificationDelayMs ?? 1_000));
     }

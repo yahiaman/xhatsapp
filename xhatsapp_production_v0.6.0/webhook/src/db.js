@@ -495,6 +495,16 @@ export async function upsertCommunityResource(id, { title, url, description, key
   return result.rows[0];
 }
 
+export async function deleteCommunityResource(id) {
+  const result = await pool.query(
+    `DELETE FROM community_resources
+     WHERE id = $1
+     RETURNING id, title`,
+    [id],
+  );
+  return result.rows[0] || null;
+}
+
 export async function markModerationAlertNotified(alertId, adminMessageId) {
   await pool.query(
     `UPDATE moderation_alerts

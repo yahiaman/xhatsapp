@@ -1,2 +1,97 @@
-[]
-
+[
+  {
+    "id": "120363382552887116@g.us",
+    "name": "🕋3 Entraide Nusuk Hajj 2027🕋",
+    "linkedParentJID": "120363363946703647@g.us"
+  },
+  {
+    "id": "120363422132067066@g.us",
+    "name": "🕋 NUSUK-HAJJ 3 🕋",
+    "linkedParentJID": "120363407868814209@g.us"
+  },
+  {
+    "id": "120363424476240287@g.us",
+    "name": "🕋5 Entraide Nusuk Hajj 2027🕋",
+    "linkedParentJID": "120363407868814209@g.us"
+  },
+  {
+    "id": "120363427913078765@g.us",
+    "name": "Groupe_admin",
+    "linkedParentJID": "120363430361743216@g.us"
+  },
+  {
+    "id": "120363365604533293@g.us",
+    "name": "🕋 NUSUK_HAJJ 2 🕋",
+    "linkedParentJID": "120363363946703647@g.us"
+  },
+  {
+    "id": "120363428902045062@g.us",
+    "name": "Groupe_01",
+    "linkedParentJID": "120363430361743216@g.us"
+  },
+  {
+    "id": "120363244471876003@g.us",
+    "name": "Admin Entraide Nusuk Hajj",
+    "linkedParentJID": "120363248178474728@g.us"
+  },
+  {
+    "id": "120363412458980402@g.us",
+    "name": "Groupe_02",
+    "linkedParentJID": "120363430361743216@g.us"
+  },
+  {
+    "id": "120363402751238489@g.us",
+    "name": "🕋4 Entraide Nusuk Hajj 2027 🕋",
+    "linkedParentJID": "120363363946703647@g.us"
+  },
+  {
+    "id": "120363247650417508@g.us",
+    "name": "🕋 NUSUK-HAJJ 1 🕋",
+    "linkedParentJID": "120363248178474728@g.us"
+  },
+  {
+    "id": "120363247200411001@g.us",
+    "name": "🕋1 Entraide Nusuk Hajj 2027🕋",
+    "linkedParentJID": "120363248178474728@g.us"
+  },
+  {
+    "id": "120363248178474728@g.us",
+    "name": "🕋 NUSUK-HAJJ 1 🕋",
+    "linkedParentJID": null
+  },
+  {
+    "id": "120363344467803379@g.us",
+    "name": "🕋2 Entraide Nusuk Hajj 2027🕋",
+    "linkedParentJID": "120363248178474728@g.us"
+  },
+  {
+    "id": "120363363946703647@g.us",
+    "name": "🕋 NUSUK_HAJJ 2 🕋",
+    "linkedParentJID": null
+  },
+  {
+    "id": "120363412210438264@g.us",
+    "name": "Poc_OpenWa",
+    "linkedParentJID": "120363430361743216@g.us"
+  },
+  {
+    "id": "120363429104521322@g.us",
+    "name": "Général",
+    "linkedParentJID": "120363430361743216@g.us"
+  },
+  {
+    "id": "120363407868814209@g.us",
+    "name": "🕋 NUSUK-HAJJ 3 🕋",
+    "linkedParentJID": null
+  },
+  {
+    "id": "120363425766194805@g.us",
+    "name": "🕋 Nusuk Hajj 2027 | Aide & Entraide – Salam Bakkah",
+    "linkedParentJID": null
+  },
+  {
+    "id": "120363430361743216@g.us",
+    "name": "Poc_OpenWa",
+    "linkedParentJID": null
+  }
+]

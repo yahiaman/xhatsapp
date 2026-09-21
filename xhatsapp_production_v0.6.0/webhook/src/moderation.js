@@ -60,8 +60,9 @@ export function normalizeForModeration(value) {
   return String(value || '')
     .normalize('NFKD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[\u200B-\u200D\uFEFF\u2060]/g, '')
     .toLowerCase()
-    .replace(/\s+/g, ' ')
+    .replace(/[\s\-_'’&/\\.,;:!?+*~()]+/g, ' ')
     .trim();
 }
 

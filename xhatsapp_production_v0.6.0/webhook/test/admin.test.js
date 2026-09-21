@@ -97,17 +97,32 @@ test('parses and validates ban input', () => {
 
 test('parses and validates resource input', () => {
   assert.deepEqual(parseResourceInput({
+    id: ' !youtube ',
     url: ' https://youtube.com/@entraidenusuk ',
     title: ' Chaine YouTube ',
     description: ' Vidéos tutos ',
     keywords: ['youtube', 'video'],
   }), {
+    id: 'youtube',
     url: 'https://youtube.com/@entraidenusuk',
     title: 'Chaine YouTube',
     description: 'Vidéos tutos',
     keywords: ['youtube', 'video'],
   });
+  assert.deepEqual(parseResourceInput({
+    id: 'soeurs',
+    url: 'https://t.me/+4GIehhQDBkRlZDA0',
+    title: 'Groupe Soeurs',
+    keywords: 'soeurs, telegram, femmes',
+  }), {
+    id: 'soeurs',
+    url: 'https://t.me/+4GIehhQDBkRlZDA0',
+    title: 'Groupe Soeurs',
+    description: null,
+    keywords: ['soeurs', 'telegram', 'femmes'],
+  });
   assert.deepEqual(parseResourceInput({ url: 'http://example.com' }), {
+    id: null,
     url: 'http://example.com',
     title: null,
     description: null,

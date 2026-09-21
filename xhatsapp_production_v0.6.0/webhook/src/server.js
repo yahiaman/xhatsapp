@@ -67,6 +67,7 @@ import {
   listCommunityResources,
   getCommunityResource,
   upsertCommunityResource,
+  deleteCommunityResource,
 } from './db.js';
 import { extractMessage, safeReference } from './message.js';
 import { decideMessagePolicy } from './policy.js';
@@ -167,7 +168,7 @@ function safeOperationalError(error) {
   if (error instanceof Error && /^summary_(?:provider_invalid|model_not_configured|api_key_not_configured|http_[0-9]{3})$/.test(error.message)) {
     return error.message;
   }
-  return error instanceof Error ? error.name : 'unknown_error';
+  return error instanceof Error ? error.message || error.name : 'unknown_error';
 }
 
 let forbiddenAgenciesCache = [];
@@ -223,6 +224,9 @@ async function reloadExemptModerators() {
 let communityTemplatesCache = {
   onboarding_dm: null,
   duplicate_refusal_dm: null,
+  group_open_message: null,
+  group_close_message: null,
+  agency_citation_warning: null,
 };
 
 async function reloadCommunityTemplates() {
@@ -975,9 +979,10 @@ async function handleCommunityCommand(message, command) {
   if (command.type === 'update_resource_url') {
     const existing = await getCommunityResource(command.id);
     if (!existing) {
+      const availableKeys = communityResourcesCache.map((r) => r.id).join(', ');
       await openWa.sendText(
         message.chatId,
-        `⚠️ Ressource inconnue : *${command.id}*.\n\nRessources modifiables : *youtube*, *site*, *faq*, *hotels*, *packages*.\nExemple : *LIEN youtube https://www.youtube.com/@votrechaine*`,
+        `⚠️ Ressource inconnue : *${command.id}*.\n\nRessources modifiables : *${availableKeys || 'aucune'}*.\nExemple : *LIEN youtube https://www.youtube.com/@votrechaine*`,
       ).catch(() => {});
       return { handled: false, reason: 'resource_not_found' };
     }
@@ -993,23 +998,44 @@ async function handleCommunityCommand(message, command) {
   return { handled: false, reason: 'unknown_community_command' };
 }
 
+const KNOWN_LID_PHONE_MAP = new Map([
+  ['134153320292552', '33767154750'], // Reda
+  ['97027673325702', '33620158507'],  // Amin
+  ['129270110248993', '33781087371'], // Khaoula
+  ['197504255676507', '33651757541'], // Nayl
+  ['245835354894356', '33664849946'],
+  ['108551104139497', '33780570444'],
+  ['89146508976382', '33644204017'],
+  ['146664643924095', '32486462619'],
+  ['122183246414019', '966565639347'],
+  ['115401727995987', '33605676512'],
+]);
+
 async function resolveParticipantDetails(openWaClient, participantId) {
   let resolvedChatId = null;
   let phoneNumber = null;
   let pushName = null;
 
   if (typeof participantId === 'string' && participantId.includes('@lid')) {
-    try {
-      const contact = await openWaClient.getContact(participantId);
-      if (contact?.id && contact.id.endsWith('@c.us')) {
-        resolvedChatId = contact.id;
-        phoneNumber = contact.id.replace('@c.us', '');
+    const rawLid = participantId.split('@')[0].replace(/\D/g, '');
+    const knownPhone = KNOWN_LID_PHONE_MAP.get(rawLid);
+    if (knownPhone) {
+      resolvedChatId = `${knownPhone}@c.us`;
+      phoneNumber = knownPhone;
+    } else {
+      try {
+        const contact = await openWaClient.getContact(participantId);
+        if (contact?.id && contact.id.endsWith('@c.us')) {
+          resolvedChatId = contact.id;
+          phoneNumber = contact.id.replace('@c.us', '');
+          KNOWN_LID_PHONE_MAP.set(rawLid, phoneNumber);
+        }
+        if (contact?.pushName) {
+          pushName = contact.pushName;
+        }
+      } catch {
+        // ignore resolution error
       }
-      if (contact?.pushName) {
-        pushName = contact.pushName;
-      }
-    } catch {
-      // ignore resolution error
     }
   }
 
@@ -1060,6 +1086,81 @@ function requestMatches(req, resolved) {
     if (!reqId.includes('@lid') && (reqDigits === resolved.phone || reqDigits.endsWith(resolved.phone) || resolved.phone.endsWith(reqDigits))) return true;
   }
   return false;
+}
+
+const participantDetailsCache = new Map();
+const groupAdminsCache = new Map();
+
+async function resolveParticipantDetailsCached(openWaClient, participantId) {
+  if (!participantId) return { rawId: null, chatId: null, phone: null, pushName: null };
+  const cached = participantDetailsCache.get(participantId);
+  if (cached && cached.expiry > Date.now()) return cached.value;
+
+  const resolved = await resolveParticipantDetails(openWaClient, participantId);
+  participantDetailsCache.set(participantId, {
+    value: resolved,
+    expiry: Date.now() + 24 * 60 * 60 * 1000,
+  });
+  return resolved;
+}
+
+async function isSenderAdminOrModerator(chatId, senderId) {
+  if (!senderId) return false;
+
+  if (isPhoneExempt(senderId, exemptModeratorsCache)) return true;
+
+  const resolved = await resolveParticipantDetailsCached(openWa, senderId);
+  if (resolved.phone && isPhoneExempt(resolved.phone, exemptModeratorsCache)) return true;
+  if (resolved.chatId && isPhoneExempt(resolved.chatId, exemptModeratorsCache)) return true;
+
+  if (chatId) {
+    try {
+      let participants = null;
+      const cachedGroup = groupAdminsCache.get(chatId);
+      if (cachedGroup && cachedGroup.expiry > Date.now()) {
+        participants = cachedGroup.participants;
+      } else {
+        const groupInfo = await openWa.getGroup(chatId).catch(() => null);
+        participants = (groupInfo?.participants || []).filter((p) => p.isAdmin);
+        groupAdminsCache.set(chatId, {
+          participants,
+          expiry: Date.now() + 60 * 60 * 1000,
+        });
+      }
+
+      if (Array.isArray(participants) && participants.length > 0) {
+        const isAdmin = participants.some((p) => p.isAdmin && participantMatches(p, resolved));
+        if (isAdmin) return true;
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return false;
+}
+
+async function prewarmGroupAdminsCache() {
+  try {
+    const groups = await listGroupPolicies().catch(() => []);
+    const monitored = groups.filter((g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored));
+    for (const g of monitored) {
+      const chatId = g.chat_id || g.chatId;
+      if (!chatId) continue;
+      const groupInfo = await openWa.getGroup(chatId).catch(() => null);
+      if (groupInfo && Array.isArray(groupInfo.participants)) {
+        groupAdminsCache.set(chatId, {
+          participants: groupInfo.participants.filter((p) => p.isAdmin),
+          expiry: Date.now() + 60 * 60 * 1000,
+        });
+      }
+    }
+    if (groupAdminsCache.size > 0) {
+      console.log('Group admins cache pre-warmed', { count: groupAdminsCache.size });
+    }
+  } catch (error) {
+    console.warn('Group admins cache pre-warm failed', { error: safeOperationalError(error) });
+  }
 }
 
 async function handleGroupJoinEvent(payload) {
@@ -1605,9 +1706,11 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
           });
         }
         try {
+          const warningText = communityTemplatesCache.agency_citation_warning
+            || "⚠️ Pas de citation de nom d'agence dans notre groupe car nous sommes neutres à ce sujet. Merci pour votre compréhension.";
           await openWa.sendText(
             message.chatId,
-            "⚠️ Pas de citation de nom d'agence dans notre groupe car nous sommes neutres à ce sujet. Merci pour votre compréhension.",
+            warningText,
           );
         } catch (error) {
           console.error('Failed to send neutrality warning', {
@@ -1622,31 +1725,34 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
         status = alert ? 'flagged' : status;
       } else {
         let resourceTriggered = false;
-        const isModOrAdmin = isPhoneExempt(message.senderId, exemptModeratorsCache);
-        if (isModOrAdmin) {
-          const resourceMention = detectResourceMention(message.text, communityResourcesCache);
-          if (resourceMention) {
+        const resourceMention = detectResourceMention(message.text, communityResourcesCache);
+        if (resourceMention) {
+          const isModOrAdmin = await isSenderAdminOrModerator(message.chatId, message.senderId);
+          if (isModOrAdmin) {
             const resKey = resourceMention.type === 'all' ? 'all' : resourceMention.resource.id;
             const cooldownKey = `${message.chatId}:${resKey}`;
             const lastSent = resourceCooldownMap.get(cooldownKey) || 0;
             const now = Date.now();
-            if (now - lastSent >= 60_000) {
+            const isExplicitCommand = /^[!/]/.test((message.text || '').trim());
+            const minCooldown = isExplicitCommand ? 5_000 : 60_000;
+            if (now - lastSent >= minCooldown) {
               resourceCooldownMap.set(cooldownKey, now);
               const cardText = resourceMention.type === 'all'
                 ? buildAllResourcesMessage(communityResourcesCache)
                 : buildResourceMessage(resourceMention.resource);
-              try {
-                await openWa.sendText(message.chatId, cardText);
-                resourceTriggered = true;
-                status = `resource_shared_${resKey}`;
-                console.log('Community resource auto-shared in group', {
-                  group: groupPolicy.name,
-                  resource: resKey,
-                  author: safeReference(message.senderId),
+              openWa.sendText(message.chatId, cardText)
+                .then(() => {
+                  console.log('Community resource auto-shared in group', {
+                    group: groupPolicy.name,
+                    resource: resKey,
+                    author: safeReference(message.senderId),
+                  });
+                })
+                .catch((error) => {
+                  console.error('Failed to send resource message', { error: safeOperationalError(error) });
                 });
-              } catch (error) {
-                console.error('Failed to send resource message', { error: safeOperationalError(error) });
-              }
+              resourceTriggered = true;
+              status = `resource_shared_${resKey}`;
             } else {
               console.log('Resource share skipped due to cooldown', {
                 group: groupPolicy.name,
@@ -1901,7 +2007,10 @@ app.put('/admin/api/recap-settings', async (request, response) => {
 });
 
 app.put('/admin/api/schedules/:id', async (request, response) => {
-  const schedule = parseSchedule(request.body);
+  const schedule = parseSchedule(request.body, {
+    openMessage: communityTemplatesCache.group_open_message,
+    closeMessage: communityTemplatesCache.group_close_message,
+  });
   if (!schedule) {
     response.status(400).json({ ok: false, error: 'invalid_schedule' });
     return;
@@ -1953,11 +2062,38 @@ app.post('/admin/api/schedules/:id/check', async (request, response) => {
   }
 });
 
+async function fetchAndSyncGroupInventory() {
+  try {
+    const data = await openWa.listGroups(500, 0);
+    const rawGroups = Array.isArray(data)
+      ? data
+      : data?.groups || data?.data || data?.items || [];
+    if (Array.isArray(rawGroups) && rawGroups.length > 0) {
+      const groups = rawGroups.map((group) => ({
+        id: String(group?.id || group?.groupId || group?.chatId || '').trim(),
+        name: String(group?.subject || group?.name || '(sans nom)').trim(),
+      })).filter((group) => group.id && group.id.endsWith('@g.us'));
+      if (groups.length > 0) {
+        const result = await syncGroupInventory(groups);
+        return { imported: result.imported, source: 'openwa_api' };
+      }
+    }
+  } catch (error) {
+    console.warn('OpenWA live group list fetch failed, falling back to static inventory', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+
+  const groups = await readGroupInventory(inventoryPath);
+  const result = await syncGroupInventory(groups);
+  return { imported: result.imported, source: 'static_inventory' };
+}
+
 app.post('/admin/api/groups/sync', async (_request, response) => {
   try {
-    const groups = await readGroupInventory(inventoryPath);
-    const result = await syncGroupInventory(groups);
-    response.json({ ok: true, imported: result.imported });
+    const result = await fetchAndSyncGroupInventory();
+    console.log('Group inventory synchronized via admin API', result);
+    response.json({ ok: true, imported: result.imported, source: result.source });
   } catch (error) {
     console.error('Group inventory sync failed', {
       error: error instanceof Error ? error.message : 'unknown_error',
@@ -2015,6 +2151,11 @@ app.put('/admin/api/templates/:id', async (request, response) => {
   }
   try {
     const template = await updateCommunityTemplate(request.params.id, parsed.content);
+    if (request.params.id === 'group_open_message') {
+      await pool.query('UPDATE group_schedules SET open_message = $1', [parsed.content]).catch(() => {});
+    } else if (request.params.id === 'group_close_message') {
+      await pool.query('UPDATE group_schedules SET close_message = $1', [parsed.content]).catch(() => {});
+    }
     await reloadCommunityTemplates();
     console.log('Community template updated', { id: template.id });
     response.json({ ok: true, template });
@@ -2135,6 +2276,35 @@ app.get('/admin/api/resources', async (_request, response) => {
   }
 });
 
+app.post('/admin/api/resources', async (request, response) => {
+  const parsed = parseResourceInput(request.body);
+  if (!parsed || !parsed.id) {
+    response.status(400).json({ ok: false, error: 'invalid_resource' });
+    return;
+  }
+  try {
+    const existing = await getCommunityResource(parsed.id);
+    if (existing) {
+      response.status(409).json({ ok: false, error: 'resource_already_exists' });
+      return;
+    }
+    const created = await upsertCommunityResource(parsed.id, {
+      title: parsed.title || parsed.id,
+      url: parsed.url,
+      description: parsed.description || '',
+      keywords: parsed.keywords || [parsed.id],
+    });
+    await reloadCommunityResources();
+    console.log('Community resource created via web admin', { id: parsed.id, url: parsed.url });
+    response.json({ ok: true, resource: created });
+  } catch (error) {
+    console.error('Failed to create community resource via web admin', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    response.status(500).json({ ok: false, error: 'resource_create_failed' });
+  }
+});
+
 app.put('/admin/api/resources/:id', async (request, response) => {
   const parsed = parseResourceInput(request.body);
   if (!parsed) {
@@ -2144,10 +2314,10 @@ app.put('/admin/api/resources/:id', async (request, response) => {
   try {
     const existing = await getCommunityResource(request.params.id);
     const updated = await upsertCommunityResource(request.params.id, {
-      title: parsed.title || existing?.title || request.params.id,
+      title: parsed.title !== null ? parsed.title : (existing?.title || request.params.id),
       url: parsed.url,
-      description: parsed.description || existing?.description || '',
-      keywords: parsed.keywords || existing?.keywords || [],
+      description: parsed.description !== null ? parsed.description : (existing?.description || ''),
+      keywords: parsed.keywords !== null ? parsed.keywords : (existing?.keywords || []),
     });
     await reloadCommunityResources();
     console.log('Community resource updated via web admin', { id: request.params.id, url: parsed.url });
@@ -2161,14 +2331,32 @@ app.put('/admin/api/resources/:id', async (request, response) => {
   }
 });
 
+app.delete('/admin/api/resources/:id', async (request, response) => {
+  try {
+    const deleted = await deleteCommunityResource(request.params.id);
+    if (!deleted) {
+      response.status(404).json({ ok: false, error: 'resource_not_found' });
+      return;
+    }
+    await reloadCommunityResources();
+    console.log('Community resource deleted via web admin', { id: request.params.id });
+    response.json({ ok: true, deleted: true });
+  } catch (error) {
+    console.error('Failed to delete community resource via web admin', {
+      id: request.params.id,
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    response.status(500).json({ ok: false, error: 'resource_delete_failed' });
+  }
+});
+
 app.use((_request, response) => {
   response.status(404).json({ ok: false, error: 'not_found' });
 });
 
 try {
-  const groups = await readGroupInventory(inventoryPath);
-  const result = await syncGroupInventory(groups);
-  console.log('Group inventory synchronized', { imported: result.imported });
+  const result = await fetchAndSyncGroupInventory();
+  console.log('Group inventory synchronized', result);
 } catch (error) {
   console.warn('Group inventory unavailable', {
     error: error instanceof Error ? error.message : 'unknown_error',
@@ -2225,6 +2413,7 @@ try {
 
 const server = app.listen(port, '0.0.0.0', () => {
   console.log('Webhook listening', { port, version: '0.6.0' });
+  prewarmGroupAdminsCache().catch(() => {});
 });
 
 const activeScheduleGroups = new Set();
@@ -2242,7 +2431,9 @@ async function processDueSchedule(schedule, due) {
     const result = await executeScheduledAction({
       action: due.action,
       chatId: schedule.chatId,
-      message: due.action === 'open' ? schedule.openMessage : schedule.closeMessage,
+      message: due.action === 'open'
+        ? (communityTemplatesCache.group_open_message || schedule.openMessage)
+        : (communityTemplatesCache.group_close_message || schedule.closeMessage),
       openWa,
       errorLabel: safeOperationalError,
       previous: {
@@ -2258,12 +2449,13 @@ async function processDueSchedule(schedule, due) {
       local_date: due.localDate,
       status: result.status,
       attempt: run.attempts,
+      ...(result.safeError ? { error: result.safeError } : {}),
     });
-    if (result.status !== 'completed') {
+    if (result.status !== 'completed' && run.attempts >= 3) {
       const admin = await getAdminTarget();
       await openWa.sendText(
         admin.chat_id,
-        `⚠️ Horaire ${due.action === 'open' ? 'd’ouverture' : 'de fermeture'} en échec pour ${schedule.groupName} (${schedule.groupReference}). Nouvelle tentative automatique prévue.`,
+        `⚠️ Échec définitif de l’horaire ${due.action === 'open' ? 'd’ouverture' : 'de fermeture'} pour ${schedule.groupName} (${schedule.groupReference}) après ${run.attempts} tentatives. Intervention requise.`,
       ).catch(() => {});
     }
   } catch (error) {
@@ -2277,6 +2469,13 @@ async function processDueSchedule(schedule, due) {
       action: due.action,
       error: safeError,
     });
+    if (run.attempts >= 3) {
+      const admin = await getAdminTarget();
+      await openWa.sendText(
+        admin.chat_id,
+        `⚠️ Échec définitif de l’horaire ${due.action === 'open' ? 'd’ouverture' : 'de fermeture'} pour ${schedule.groupName} (${schedule.groupReference}) après ${run.attempts} tentatives : ${safeError}. Intervention requise.`,
+      ).catch(() => {});
+    }
   } finally {
     activeScheduleGroups.delete(schedule.groupId);
   }

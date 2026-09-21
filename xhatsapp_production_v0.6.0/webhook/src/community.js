@@ -7,6 +7,10 @@ export function normalizeText(text) {
   return String(text || '')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
+    .replace(/œ/g, 'oe')
+    .replace(/Œ/g, 'oe')
+    .replace(/æ/g, 'ae')
+    .replace(/Æ/g, 'ae')
     .replace(/[’‘ʻ]/g, "'")
     .toLowerCase();
 }
@@ -111,11 +115,11 @@ export function parseCommunityCommand(rawText) {
     };
   }
 
-  const shortcutMatch = trimmed.match(/^!([a-zA-Z0-9_\-]+)$/);
+  const shortcutMatch = trimmed.match(/^!([\p{L}\p{N}_\-]+)$/u);
   if (shortcutMatch) {
     return {
       type: 'shortcut',
-      shortcut: shortcutMatch[1].toLowerCase(),
+      shortcut: normalizeText(shortcutMatch[1]),
     };
   }
 
@@ -469,18 +473,17 @@ export function detectResourceMention(rawText, resourcesList = []) {
   const clean = normalizeText(rawText);
   const trimmed = rawText.trim();
 
-  // 1. Direct command shortcut, e.g. !youtube, !site, !faq, !hotels, !packages, !liens
-  const cmdMatch = trimmed.match(/^[!/]([a-zA-Z0-9_\-]+)$/);
+  // 1. Direct command shortcut, e.g. !youtube, !site, !faq, !hotels, !packages, !liens, !soeurs, !série
+  const cmdMatch = trimmed.match(/^[!/]([\p{L}\p{N}_\-]+)$/u);
   if (cmdMatch) {
-    const cmd = cmdMatch[1].toLowerCase();
+    const cmd = normalizeText(cmdMatch[1]);
     if (cmd === 'liens' || cmd === 'ressources' || cmd === 'all') {
       return { type: 'all' };
     }
-    const found = resourcesList.find((r) => {
-      if (r.id.toLowerCase() === cmd) return true;
-      if (Array.isArray(r.keywords) && r.keywords.some((k) => normalizeText(k) === cmd)) return true;
-      return false;
-    });
+    let found = resourcesList.find((r) => r.id.toLowerCase() === cmd);
+    if (!found) {
+      found = resourcesList.find((r) => Array.isArray(r.keywords) && r.keywords.some((k) => normalizeText(k) === cmd));
+    }
     if (found) {
       return { type: 'resource', resource: found };
     }

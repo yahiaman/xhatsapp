@@ -60,6 +60,23 @@ test('raises a typed error without leaking the API key', async (context) => {
   );
 });
 
+test('lists groups with limit and offset query parameters', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  let capturedUrl = null;
+  globalThis.fetch = async (url) => {
+    capturedUrl = url;
+    return new Response(JSON.stringify([{ id: 'g1@g.us', name: 'Groupe 1' }]), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 's', apiKey: 'k' });
+  const groups = await client.listGroups(100, 20);
+  assert.equal(capturedUrl, 'http://openwa:2785/api/sessions/s/groups?limit=100&offset=20');
+  assert.equal(groups.length, 1);
+  assert.equal(groups[0].name, 'Groupe 1');
+});
+
 test('reads and updates group settings with encoded group ids', async (context) => {
   const originalFetch = globalThis.fetch;
   context.after(() => { globalThis.fetch = originalFetch; });

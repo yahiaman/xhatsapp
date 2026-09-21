@@ -14,6 +14,16 @@ test('validates a confirmed same-day schedule', () => {
     enabled: true, timezone: 'Europe/Paris', weekdays: [1, 2, 3, 4, 5],
     openTime: '08:00', closeTime: '22:00', openMessage: 'Ouverture', closeMessage: 'Fermeture',
   });
+  assert.deepEqual(parseSchedule({
+    enabled: true, timezone: 'Europe/Paris', weekdays: [1, 2, 3, 4, 5],
+    openTime: '08:00', closeTime: '22:00', confirm: true,
+  }, {
+    openMessage: 'Message par defaut ouverture',
+    closeMessage: 'Message par defaut fermeture',
+  }), {
+    enabled: true, timezone: 'Europe/Paris', weekdays: [1, 2, 3, 4, 5],
+    openTime: '08:00', closeTime: '22:00', openMessage: 'Message par defaut ouverture', closeMessage: 'Message par defaut fermeture',
+  });
   assert.equal(parseSchedule({ ...valid, confirm: false }).confirmationRequired, true);
   assert.equal(parseSchedule({ ...valid, openTime: '23:00' }), null);
 });
@@ -27,6 +37,10 @@ test('selects only the latest due action in Europe/Paris', () => {
 test('reads supported OpenWA group settings envelopes', () => {
   assert.equal(readAnnounce({ announce: true }), true);
   assert.equal(readAnnounce({ data: { announce: false } }), false);
+  assert.equal(readAnnounce({ announce: 0 }), false);
+  assert.equal(readAnnounce({ announce: 1 }), true);
+  assert.equal(readAnnounce({ isAnnounce: 0 }), false);
+  assert.equal(readAnnounce({ settings: { announce: 'false' } }), false);
 });
 
 test('closes after sending and opens before sending', async () => {
