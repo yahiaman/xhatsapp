@@ -1694,75 +1694,79 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
         status = draftResult.handled ? 'broadcast_pending' : draftResult.reason;
       }
     } else if (result.inserted && !message.fromMe && groupPolicy.is_monitored) {
-      const detection = detectModeration(message.text, forbiddenAgenciesCache, moderationKeywordsCache);
-      if (detection.isForbiddenAgency) {
-        try {
-          await openWa.deleteMessage(message.chatId, message.messageId);
-        } catch (error) {
-          console.error('Failed to auto-delete forbidden agency message', {
-            chat_ref: safeReference(message.chatId),
-            message_ref: safeReference(message.messageId),
-            error: safeOperationalError(error),
-          });
-        }
-        try {
-          const warningText = communityTemplatesCache.agency_citation_warning
-            || "⚠️ Pas de citation de nom d'agence dans notre groupe car nous sommes neutres à ce sujet. Merci pour votre compréhension.";
-          await openWa.sendText(
-            message.chatId,
-            warningText,
-          );
-        } catch (error) {
-          console.error('Failed to send neutrality warning', {
-            chat_ref: safeReference(message.chatId),
-            error: safeOperationalError(error),
-          });
-        }
-        const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, true);
-        status = alert ? 'agency_auto_deleted' : status;
-      } else if (detection.flagged) {
-        const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false);
-        status = alert ? 'flagged' : status;
-      } else {
+      const isModOrAdmin = await isSenderAdminOrModerator(message.chatId, message.senderId);
+
+      if (isModOrAdmin) {
+        // --- 1. ADMINS & MODÉRATEURS : EXCLUS DE LA MODÉRATION STRICTE & DES ALERTES ---
         let resourceTriggered = false;
         const resourceMention = detectResourceMention(message.text, communityResourcesCache);
         if (resourceMention) {
-          const isModOrAdmin = await isSenderAdminOrModerator(message.chatId, message.senderId);
-          if (isModOrAdmin) {
-            const resKey = resourceMention.type === 'all' ? 'all' : resourceMention.resource.id;
-            const cooldownKey = `${message.chatId}:${resKey}`;
-            const lastSent = resourceCooldownMap.get(cooldownKey) || 0;
-            const now = Date.now();
-            const isExplicitCommand = /^[!/]/.test((message.text || '').trim());
-            const minCooldown = isExplicitCommand ? 5_000 : 60_000;
-            if (now - lastSent >= minCooldown) {
-              resourceCooldownMap.set(cooldownKey, now);
-              const cardText = resourceMention.type === 'all'
-                ? buildAllResourcesMessage(communityResourcesCache)
-                : buildResourceMessage(resourceMention.resource);
-              openWa.sendText(message.chatId, cardText)
-                .then(() => {
-                  console.log('Community resource auto-shared in group', {
-                    group: groupPolicy.name,
-                    resource: resKey,
-                    author: safeReference(message.senderId),
-                  });
-                })
-                .catch((error) => {
-                  console.error('Failed to send resource message', { error: safeOperationalError(error) });
+          const resKey = resourceMention.type === 'all' ? 'all' : resourceMention.resource.id;
+          const cooldownKey = `${message.chatId}:${resKey}`;
+          const lastSent = resourceCooldownMap.get(cooldownKey) || 0;
+          const now = Date.now();
+          const isExplicitCommand = /^[!/]/.test((message.text || '').trim());
+          const minCooldown = isExplicitCommand ? 5_000 : 60_000;
+          if (now - lastSent >= minCooldown) {
+            resourceCooldownMap.set(cooldownKey, now);
+            const cardText = resourceMention.type === 'all'
+              ? buildAllResourcesMessage(communityResourcesCache)
+              : buildResourceMessage(resourceMention.resource);
+            openWa.sendText(message.chatId, cardText)
+              .then(() => {
+                console.log('Community resource auto-shared in group', {
+                  group: groupPolicy.name,
+                  resource: resKey,
+                  author: safeReference(message.senderId),
                 });
-              resourceTriggered = true;
-              status = `resource_shared_${resKey}`;
-            } else {
-              console.log('Resource share skipped due to cooldown', {
-                group: groupPolicy.name,
-                resource: resKey,
+              })
+              .catch((error) => {
+                console.error('Failed to send resource message', { error: safeOperationalError(error) });
               });
-            }
+            resourceTriggered = true;
+            status = `resource_shared_${resKey}`;
+          } else {
+            console.log('Resource share skipped due to cooldown', {
+              group: groupPolicy.name,
+              resource: resKey,
+            });
           }
         }
-
         if (!resourceTriggered) {
+          status = 'admin_message_exempted';
+        }
+      } else {
+        // --- 2. PÈLERINS ORDINAIRES : MODÉRATION STRICTE & SENTINELLE PANIQUE ---
+        const detection = detectModeration(message.text, forbiddenAgenciesCache, moderationKeywordsCache);
+        if (detection.isForbiddenAgency) {
+          try {
+            await openWa.deleteMessage(message.chatId, message.messageId);
+          } catch (error) {
+            console.error('Failed to auto-delete forbidden agency message', {
+              chat_ref: safeReference(message.chatId),
+              message_ref: safeReference(message.messageId),
+              error: safeOperationalError(error),
+            });
+          }
+          try {
+            const warningText = communityTemplatesCache.agency_citation_warning
+              || "⚠️ Pas de citation de nom d'agence dans notre groupe car nous sommes neutres à ce sujet. Merci pour votre compréhension.";
+            await openWa.sendText(
+              message.chatId,
+              warningText,
+            );
+          } catch (error) {
+            console.error('Failed to send neutrality warning', {
+              chat_ref: safeReference(message.chatId),
+              error: safeOperationalError(error),
+            });
+          }
+          const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, true);
+          status = alert ? 'agency_auto_deleted' : status;
+        } else if (detection.flagged) {
+          const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false);
+          status = alert ? 'flagged' : status;
+        } else {
           const panic = detectPanic(message.text);
           if (panic.isPanic) {
             try {
