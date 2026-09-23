@@ -482,6 +482,12 @@ export function detectResourceMention(rawText, resourcesList = []) {
     }
     let found = resourcesList.find((r) => r.id.toLowerCase() === cmd);
     if (!found) {
+      found = resourcesList.find((r) => {
+        const id = r.id.toLowerCase();
+        return id === cmd || (id.endsWith('s') && id.slice(0, -1) === cmd) || (cmd.endsWith('s') && cmd.slice(0, -1) === id);
+      });
+    }
+    if (!found) {
       found = resourcesList.find((r) => Array.isArray(r.keywords) && r.keywords.some((k) => normalizeText(k) === cmd));
     }
     if (found) {

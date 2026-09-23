@@ -1137,14 +1137,24 @@ async function isSenderAdminOrModerator(chatId, senderId) {
     }
   }
 
+  // Cross-check: est-il admin dans le groupe de travail admin ou dans l'un des groupes surveillés ?
+  for (const [, cached] of groupAdminsCache) {
+    if (Array.isArray(cached.participants)) {
+      const isAdmin = cached.participants.some((p) => p.isAdmin && participantMatches(p, resolved));
+      if (isAdmin) return true;
+    }
+  }
+
   return false;
 }
 
 async function prewarmGroupAdminsCache() {
   try {
     const groups = await listGroupPolicies().catch(() => []);
-    const monitored = groups.filter((g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored));
-    for (const g of monitored) {
+    const relevant = groups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored || g.is_admin || g.isAdmin),
+    );
+    for (const g of relevant) {
       const chatId = g.chat_id || g.chatId;
       if (!chatId) continue;
       const groupInfo = await openWa.getGroup(chatId).catch(() => null);
