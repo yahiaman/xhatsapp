@@ -457,29 +457,59 @@ async function processBroadcast(draftId) {
       if (!await markBroadcastDeliverySending(delivery.id)) continue;
       try {
         let sent;
+        const bodyText = execution.body ? execution.body.trim() : '';
+        const fitsInCaption = bodyText.length <= 1024;
+
         if (execution.media_data && (execution.media_type === 'image' || execution.media_mimetype?.startsWith('image/'))) {
-          sent = await openWa.sendImage(delivery.chat_id, {
-            base64: execution.media_data,
-            mimetype: execution.media_mimetype || 'image/jpeg',
-            caption: execution.body || undefined,
-            filename: execution.media_filename || undefined,
-          });
+          if (fitsInCaption) {
+            sent = await openWa.sendImage(delivery.chat_id, {
+              base64: execution.media_data,
+              mimetype: execution.media_mimetype || 'image/jpeg',
+              caption: bodyText || undefined,
+              filename: execution.media_filename || undefined,
+            });
+          } else {
+            sent = await openWa.sendImage(delivery.chat_id, {
+              base64: execution.media_data,
+              mimetype: execution.media_mimetype || 'image/jpeg',
+              filename: execution.media_filename || undefined,
+            });
+            await openWa.sendText(delivery.chat_id, bodyText);
+          }
         } else if (execution.media_data && (execution.media_type === 'video' || execution.media_mimetype?.startsWith('video/'))) {
-          sent = await openWa.sendVideo(delivery.chat_id, {
-            base64: execution.media_data,
-            mimetype: execution.media_mimetype || 'video/mp4',
-            caption: execution.body || undefined,
-            filename: execution.media_filename || undefined,
-          });
+          if (fitsInCaption) {
+            sent = await openWa.sendVideo(delivery.chat_id, {
+              base64: execution.media_data,
+              mimetype: execution.media_mimetype || 'video/mp4',
+              caption: bodyText || undefined,
+              filename: execution.media_filename || undefined,
+            });
+          } else {
+            sent = await openWa.sendVideo(delivery.chat_id, {
+              base64: execution.media_data,
+              mimetype: execution.media_mimetype || 'video/mp4',
+              filename: execution.media_filename || undefined,
+            });
+            await openWa.sendText(delivery.chat_id, bodyText);
+          }
         } else if (execution.media_data && (execution.media_type === 'document' || execution.media_data)) {
-          sent = await openWa.sendDocument(delivery.chat_id, {
-            base64: execution.media_data,
-            mimetype: execution.media_mimetype || 'application/octet-stream',
-            caption: execution.body || undefined,
-            filename: execution.media_filename || undefined,
-          });
+          if (fitsInCaption) {
+            sent = await openWa.sendDocument(delivery.chat_id, {
+              base64: execution.media_data,
+              mimetype: execution.media_mimetype || 'application/octet-stream',
+              caption: bodyText || undefined,
+              filename: execution.media_filename || undefined,
+            });
+          } else {
+            sent = await openWa.sendDocument(delivery.chat_id, {
+              base64: execution.media_data,
+              mimetype: execution.media_mimetype || 'application/octet-stream',
+              filename: execution.media_filename || undefined,
+            });
+            await openWa.sendText(delivery.chat_id, bodyText);
+          }
         } else {
-          sent = await openWa.sendText(delivery.chat_id, execution.body);
+          sent = await openWa.sendText(delivery.chat_id, bodyText);
         }
         await markBroadcastDeliverySent(delivery.id, responseMessageId(sent));
         console.log('Broadcast destination sent', {
@@ -776,19 +806,37 @@ async function handleCommunityCommand(message, command) {
       if (!chatId) continue;
       try {
         if (flashMedia?.data && (flashMedia.type === 'image' || flashMedia.mimetype?.startsWith('image/'))) {
-          await openWa.sendImage(chatId, {
-            base64: flashMedia.data,
-            mimetype: flashMedia.mimetype || 'image/jpeg',
-            caption: flashBody,
-            filename: flashMedia.filename || undefined,
-          });
+          if (flashBody.length <= 1024) {
+            await openWa.sendImage(chatId, {
+              base64: flashMedia.data,
+              mimetype: flashMedia.mimetype || 'image/jpeg',
+              caption: flashBody,
+              filename: flashMedia.filename || undefined,
+            });
+          } else {
+            await openWa.sendImage(chatId, {
+              base64: flashMedia.data,
+              mimetype: flashMedia.mimetype || 'image/jpeg',
+              filename: flashMedia.filename || undefined,
+            });
+            await openWa.sendText(chatId, flashBody);
+          }
         } else if (flashMedia?.data && (flashMedia.type === 'video' || flashMedia.mimetype?.startsWith('video/'))) {
-          await openWa.sendVideo(chatId, {
-            base64: flashMedia.data,
-            mimetype: flashMedia.mimetype || 'video/mp4',
-            caption: flashBody,
-            filename: flashMedia.filename || undefined,
-          });
+          if (flashBody.length <= 1024) {
+            await openWa.sendVideo(chatId, {
+              base64: flashMedia.data,
+              mimetype: flashMedia.mimetype || 'video/mp4',
+              caption: flashBody,
+              filename: flashMedia.filename || undefined,
+            });
+          } else {
+            await openWa.sendVideo(chatId, {
+              base64: flashMedia.data,
+              mimetype: flashMedia.mimetype || 'video/mp4',
+              filename: flashMedia.filename || undefined,
+            });
+            await openWa.sendText(chatId, flashBody);
+          }
         } else {
           await openWa.sendText(chatId, flashBody);
         }
@@ -804,7 +852,7 @@ async function handleCommunityCommand(message, command) {
     const mediaNotice = flashMedia?.data ? '\n📷 Média inclus.' : '';
     await openWa.sendText(
       message.chatId,
-      `🚨 *FLASH INFO OFFICIEL DIFFUSÉ*\n\nDiffusé dans ${sentCount}/${monitoredGroups.length} groupe(s).${mediaNotice}\n\n🔒 *Rappel :* Tous les groupes sont actuellement verrouillés. Tapez *UNBLOCK ALL* lorsque vous souhaitez rouvrir les échanges.`,
+      `🚨 *FLASH INFO HAJJ NUSUK DIFFUSÉ*\n\nDiffusé dans ${sentCount}/${monitoredGroups.length} groupe(s).${mediaNotice}\n\n🔒 *Rappel :* Tous les groupes sont actuellement verrouillés. Tapez *UNBLOCK ALL* lorsque vous souhaitez rouvrir les échanges.`,
     ).catch(() => {});
     return { handled: true, status: 'flash_broadcasted' };
   }

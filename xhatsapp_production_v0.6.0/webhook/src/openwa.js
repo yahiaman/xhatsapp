@@ -37,34 +37,31 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
       return request('send_text', 'POST', '/messages/send-text', { chatId, text });
     },
     sendImage(chatId, { base64, url, mimetype = 'image/jpeg', caption, filename } = {}) {
-      return request('send_image', 'POST', '/messages/send-image', {
-        chatId,
-        base64,
-        url,
-        mimetype,
-        caption,
-        filename,
-      });
+      const payload = { chatId };
+      if (base64) payload.base64 = base64;
+      if (url) payload.url = url;
+      if (mimetype) payload.mimetype = mimetype;
+      if (caption) payload.caption = caption;
+      if (filename) payload.filename = filename;
+      return request('send_image', 'POST', '/messages/send-image', payload);
     },
     sendVideo(chatId, { base64, url, mimetype = 'video/mp4', caption, filename } = {}) {
-      return request('send_video', 'POST', '/messages/send-video', {
-        chatId,
-        base64,
-        url,
-        mimetype,
-        caption,
-        filename,
-      });
+      const payload = { chatId };
+      if (base64) payload.base64 = base64;
+      if (url) payload.url = url;
+      if (mimetype) payload.mimetype = mimetype;
+      if (caption) payload.caption = caption;
+      if (filename) payload.filename = filename;
+      return request('send_video', 'POST', '/messages/send-video', payload);
     },
     sendDocument(chatId, { base64, url, mimetype = 'application/octet-stream', caption, filename } = {}) {
-      return request('send_document', 'POST', '/messages/send-document', {
-        chatId,
-        base64,
-        url,
-        mimetype,
-        caption,
-        filename,
-      });
+      const payload = { chatId };
+      if (base64) payload.base64 = base64;
+      if (url) payload.url = url;
+      if (mimetype) payload.mimetype = mimetype;
+      if (caption) payload.caption = caption;
+      if (filename) payload.filename = filename;
+      return request('send_document', 'POST', '/messages/send-document', payload);
     },
     async downloadMedia(chatId, messageId) {
       const response = await fetch(
