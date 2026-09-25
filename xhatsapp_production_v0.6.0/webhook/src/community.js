@@ -168,7 +168,7 @@ export function buildPanicAlert({
 
 export function buildFlashMessage(message) {
   const parts = [
-    '🚨 *FLASH INFO OFFICIEL NUSUK* 🚨',
+    '🚨 *FLASH INFO HAJJ NUSUK* 🚨',
     '───────────────────────────',
   ];
   if (message && message.trim()) {

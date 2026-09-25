@@ -98,11 +98,11 @@ test('builds panic alert, flash message, and notices correctly', () => {
   assert.ok(alert.includes('arnaque'));
 
   const flash = buildFlashMessage('Information officielle sur les transferts.');
-  assert.ok(flash.includes('FLASH INFO OFFICIEL NUSUK'));
+  assert.ok(flash.includes('FLASH INFO HAJJ NUSUK'));
   assert.ok(flash.includes('Information officielle sur les transferts.'));
 
   const emptyFlash = buildFlashMessage('');
-  assert.ok(emptyFlash.includes('FLASH INFO OFFICIEL NUSUK'));
+  assert.ok(emptyFlash.includes('FLASH INFO HAJJ NUSUK'));
   assert.ok(emptyFlash.includes('Message officiel de l’équipe d’administration.'));
 
   const lock = buildLockNotice();
