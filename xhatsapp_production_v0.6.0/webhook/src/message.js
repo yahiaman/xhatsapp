@@ -91,6 +91,18 @@ export function extractMessage(payload) {
 
   const messageId = explicitId || syntheticId({ chatId, senderId, timestamp, text });
 
+  const rawMedia = data.media || data.message?.media || null;
+  const messageType = firstString(data.type, data.messageType) || 'unknown';
+  const hasMedia = messageType === 'image' || messageType === 'video' || messageType === 'document' || Boolean(rawMedia);
+
+  const media = hasMedia ? {
+    type: messageType === 'unknown' ? (rawMedia?.mimetype?.startsWith('video/') ? 'video' : 'image') : messageType,
+    mimetype: rawMedia?.mimetype || (messageType === 'image' ? 'image/jpeg' : (messageType === 'video' ? 'video/mp4' : 'application/octet-stream')),
+    data: typeof rawMedia?.data === 'string' && rawMedia.data.length > 0 ? rawMedia.data : null,
+    filename: rawMedia?.filename || null,
+    omitted: rawMedia?.omitted === true || !rawMedia?.data,
+  } : null;
+
   return {
     messageId,
     chatId,
@@ -100,7 +112,8 @@ export function extractMessage(payload) {
     text: text || null,
     fromMe,
     isGroup: data.isGroup === true || chatId.endsWith('@g.us'),
-    messageType: firstString(data.type) || 'unknown',
+    messageType,
+    media,
     receivedAt: toDate(timestamp),
   };
 }

@@ -51,3 +51,24 @@ test('offers a retry only when at least one destination failed', () => {
   assert.doesNotMatch(buildBroadcastSummary({ code: 'ABC123', sent: 2, failed: 0 }), /REESSAYER/);
   assert.match(buildBroadcastSummary({ code: 'ABC123', sent: 1, failed: 1 }), /REESSAYER ABC123/);
 });
+
+test('accepts communication with empty text when media is attached', () => {
+  assert.deepEqual(parseCommunicationDraft('COMMUNICATION', true), { text: '' });
+  assert.deepEqual(parseCommunicationDraft('COMMUNICATION\n', true), { text: '' });
+  assert.deepEqual(
+    parseCommunicationDraft('COMMUNICATION\nPhoto d’illustration', true),
+    { text: 'Photo d’illustration' },
+  );
+});
+
+test('builds preview with media indicator when media is attached', () => {
+  const preview = buildBroadcastPreview({
+    code: 'ABC123',
+    text: 'Photo officielle',
+    destinations: [{ name: 'Groupe test', reference: '0c5a45d0f8a4' }],
+    mediaType: 'image',
+  });
+  assert.match(preview, /Média : 📷 Image jointe/);
+  assert.match(preview, /Photo officielle/);
+});
+

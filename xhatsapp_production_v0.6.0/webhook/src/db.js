@@ -607,6 +607,10 @@ export async function createBroadcastDraft({
   adminGroupId,
   body,
   createdByRef,
+  mediaType = null,
+  mediaMimetype = null,
+  mediaData = null,
+  mediaFilename = null,
 }) {
   const client = await pool.connect();
   try {
@@ -624,11 +628,12 @@ export async function createBroadcastDraft({
 
     const draft = await client.query(
       `INSERT INTO broadcast_drafts (
-         code, source_message_id, admin_group_id, body, created_by_ref
-       ) VALUES ($1, $2, $3, $4, $5)
+         code, source_message_id, admin_group_id, body, created_by_ref,
+         media_type, media_mimetype, media_data, media_filename
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        ON CONFLICT (source_message_id) DO NOTHING
-       RETURNING id, code, body, status, created_at`,
-      [code, sourceMessageId, adminGroupId, body, createdByRef],
+       RETURNING id, code, body, media_type, media_mimetype, media_filename, status, created_at`,
+      [code, sourceMessageId, adminGroupId, body, createdByRef, mediaType, mediaMimetype, mediaData, mediaFilename],
     );
     if (draft.rowCount !== 1) {
       await client.query('ROLLBACK');
@@ -730,7 +735,7 @@ export async function listResumableBroadcastIds() {
 
 export async function getBroadcastExecution(draftId) {
   const draft = await pool.query(
-    `SELECT d.id, d.code, d.body, g.chat_id AS admin_chat_id
+    `SELECT d.id, d.code, d.body, d.media_type, d.media_mimetype, d.media_data, d.media_filename, g.chat_id AS admin_chat_id
      FROM broadcast_drafts d
      JOIN whatsapp_groups g ON g.id = d.admin_group_id
      WHERE d.id = $1 AND d.status = 'publishing'`,

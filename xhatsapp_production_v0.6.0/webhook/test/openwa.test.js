@@ -192,4 +192,51 @@ test('retrieves session status and me profile', async (context) => {
   assert.equal(me.id, '33611457462@c.us');
 });
 
+test('sends image with the official OpenWA route and payload', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = { url, options };
+    return new Response(JSON.stringify({ messageId: 'img-1' }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 'sess', apiKey: 'key' });
+  const result = await client.sendImage('group@g.us', {
+    base64: 'aW1hZ2VkYXRh',
+    mimetype: 'image/jpeg',
+    caption: 'Photo officielle',
+  });
+  assert.equal(captured.url, 'http://openwa:2785/api/sessions/sess/messages/send-image');
+  assert.deepEqual(JSON.parse(captured.options.body), {
+    chatId: 'group@g.us',
+    base64: 'aW1hZ2VkYXRh',
+    mimetype: 'image/jpeg',
+    caption: 'Photo officielle',
+  });
+  assert.equal(result.messageId, 'img-1');
+});
+
+test('downloads stored media as a buffer with mime type', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  let captured;
+  globalThis.fetch = async (url, options) => {
+    captured = { url, options };
+    return new Response(Buffer.from('binary-image-content'), {
+      status: 200,
+      headers: { 'Content-Type': 'image/jpeg' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 'sess', apiKey: 'key' });
+  const media = await client.downloadMedia('group@g.us', 'msg-123');
+  assert.equal(captured.url, 'http://openwa:2785/api/sessions/sess/messages/group%40g.us/msg-123/media');
+  assert.equal(media.mimetype, 'image/jpeg');
+  assert.equal(media.buffer.toString(), 'binary-image-content');
+  assert.equal(media.base64, Buffer.from('binary-image-content').toString('base64'));
+});
+
+
 

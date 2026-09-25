@@ -41,6 +41,18 @@ test('parses community admin commands with case-insensitivity', () => {
     parseCommunityCommand('FLASH   '),
     { type: 'flash', error: 'flash_empty' },
   );
+  assert.deepEqual(
+    parseCommunityCommand('FLASH', { hasMedia: true }),
+    { type: 'flash', message: '' },
+  );
+  assert.deepEqual(
+    parseCommunityCommand('FLASH   ', { hasMedia: true }),
+    { type: 'flash', message: '' },
+  );
+  assert.deepEqual(
+    parseCommunityCommand('FLASH Info importante', { hasMedia: true }),
+    { type: 'flash', message: 'Info importante' },
+  );
 
   assert.equal(parseCommunityCommand('Bonjour à tous'), null);
   assert.equal(parseCommunityCommand(''), null);
@@ -88,6 +100,10 @@ test('builds panic alert, flash message, and notices correctly', () => {
   const flash = buildFlashMessage('Information officielle sur les transferts.');
   assert.ok(flash.includes('FLASH INFO OFFICIEL NUSUK'));
   assert.ok(flash.includes('Information officielle sur les transferts.'));
+
+  const emptyFlash = buildFlashMessage('');
+  assert.ok(emptyFlash.includes('FLASH INFO OFFICIEL NUSUK'));
+  assert.ok(emptyFlash.includes('Message officiel de l’équipe d’administration.'));
 
   const lock = buildLockNotice();
   assert.ok(lock.includes('GROUPE TEMPORAIREMENT VERROUILLÉ'));

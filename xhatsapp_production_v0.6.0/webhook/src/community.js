@@ -28,7 +28,7 @@ export const PANIC_PATTERNS = [
   { term: 'vol d’argent', regex: /\bvol\s+d['’]argent\b|\bon\s+m['’]a\s+vole\b/i },
 ];
 
-export function parseCommunityCommand(rawText) {
+export function parseCommunityCommand(rawText, { hasMedia = false } = {}) {
   if (typeof rawText !== 'string') return null;
   const trimmed = rawText.trim();
   if (!trimmed) return null;
@@ -100,7 +100,7 @@ export function parseCommunityCommand(rawText) {
 
   if (/^FLASH(?:\s+|:|$)/i.test(trimmed)) {
     const flashBody = trimmed.replace(/^FLASH(?:\s*:|\s+)?/i, '').trim();
-    if (!flashBody) {
+    if (!flashBody && !hasMedia) {
       return { type: 'flash', error: 'flash_empty' };
     }
     return { type: 'flash', message: flashBody };
@@ -167,13 +167,15 @@ export function buildPanicAlert({
 }
 
 export function buildFlashMessage(message) {
-  return [
+  const parts = [
     '🚨 *FLASH INFO OFFICIEL NUSUK* 🚨',
     '───────────────────────────',
-    message,
-    '───────────────────────────',
-    'ℹ️ _Message officiel de l’équipe d’administration._',
-  ].join('\n');
+  ];
+  if (message && message.trim()) {
+    parts.push(message.trim(), '───────────────────────────');
+  }
+  parts.push('ℹ️ _Message officiel de l’équipe d’administration._');
+  return parts.join('\n');
 }
 
 export function buildLockNotice() {

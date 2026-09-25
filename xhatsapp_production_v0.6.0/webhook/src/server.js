@@ -357,7 +357,7 @@ async function handleModerationCommand(message, command) {
   }
 }
 
-async function newBroadcastDraft(message, groupPolicy, messageInternalId, text) {
+async function newBroadcastDraft(message, groupPolicy, messageInternalId, text, media = null) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
       return await createBroadcastDraft({
@@ -366,6 +366,10 @@ async function newBroadcastDraft(message, groupPolicy, messageInternalId, text) 
         adminGroupId: groupPolicy.id,
         body: text,
         createdByRef: safeReference(message.senderId),
+        mediaType: media?.type || null,
+        mediaMimetype: media?.mimetype || null,
+        mediaData: media?.data || null,
+        mediaFilename: media?.filename || null,
       });
     } catch (error) {
       if (error?.code !== '23505') throw error;
@@ -383,9 +387,30 @@ async function handleCommunicationDraft(message, groupPolicy, messageInternalId,
     await openWa.sendText(message.chatId, `⚠️ ${labels[parsed.error] || 'Brouillon invalide.'}`);
     return { handled: false, reason: parsed.error };
   }
+
+  let media = message.media;
+  if (media && !media.data && openWa.downloadMedia) {
+    try {
+      const downloaded = await openWa.downloadMedia(message.chatId, message.messageId);
+      media.data = downloaded.base64;
+      if (downloaded.mimetype) media.mimetype = downloaded.mimetype;
+    } catch (err) {
+      console.error('Failed to download media for communication draft', {
+        chatId: message.chatId,
+        messageId: message.messageId,
+        error: safeOperationalError(err),
+      });
+      await openWa.sendText(
+        message.chatId,
+        '⚠️ Impossible de récupérer le fichier/média joint depuis WhatsApp. Veuillez réessayer.',
+      ).catch(() => {});
+      return { handled: false, reason: 'media_download_failed' };
+    }
+  }
+
   let draft;
   try {
-    draft = await newBroadcastDraft(message, groupPolicy, messageInternalId, parsed.text);
+    draft = await newBroadcastDraft(message, groupPolicy, messageInternalId, parsed.text, media);
   } catch (error) {
     if (error instanceof Error && error.message === 'no_broadcast_targets') {
       await openWa.sendText(
@@ -402,10 +427,12 @@ async function handleCommunicationDraft(message, groupPolicy, messageInternalId,
       code: draft.code,
       text: draft.body,
       destinations: draft.destinations,
+      mediaType: draft.media_type,
     }));
     console.log('Broadcast draft created', {
       code: draft.code,
       destinations: draft.destinations.length,
+      has_media: Boolean(draft.media_type),
       admin_group_ref: groupPolicy.inventory_ref || safeReference(message.chatId),
     });
   } catch (error) {
@@ -429,7 +456,31 @@ async function processBroadcast(draftId) {
       const delivery = execution.deliveries[index];
       if (!await markBroadcastDeliverySending(delivery.id)) continue;
       try {
-        const sent = await openWa.sendText(delivery.chat_id, execution.body);
+        let sent;
+        if (execution.media_data && (execution.media_type === 'image' || execution.media_mimetype?.startsWith('image/'))) {
+          sent = await openWa.sendImage(delivery.chat_id, {
+            base64: execution.media_data,
+            mimetype: execution.media_mimetype || 'image/jpeg',
+            caption: execution.body || undefined,
+            filename: execution.media_filename || undefined,
+          });
+        } else if (execution.media_data && (execution.media_type === 'video' || execution.media_mimetype?.startsWith('video/'))) {
+          sent = await openWa.sendVideo(delivery.chat_id, {
+            base64: execution.media_data,
+            mimetype: execution.media_mimetype || 'video/mp4',
+            caption: execution.body || undefined,
+            filename: execution.media_filename || undefined,
+          });
+        } else if (execution.media_data && (execution.media_type === 'document' || execution.media_data)) {
+          sent = await openWa.sendDocument(delivery.chat_id, {
+            base64: execution.media_data,
+            mimetype: execution.media_mimetype || 'application/octet-stream',
+            caption: execution.body || undefined,
+            filename: execution.media_filename || undefined,
+          });
+        } else {
+          sent = await openWa.sendText(delivery.chat_id, execution.body);
+        }
         await markBroadcastDeliverySent(delivery.id, responseMessageId(sent));
         console.log('Broadcast destination sent', {
           code: execution.code,
@@ -704,6 +755,18 @@ async function handleCommunityCommand(message, command) {
       await openWa.updateGroupSettings(chatId, { announce: true }).catch(() => {});
     }
 
+    // Download media if attached and omitted
+    let flashMedia = message.media;
+    if (flashMedia && !flashMedia.data && openWa.downloadMedia) {
+      try {
+        const downloaded = await openWa.downloadMedia(message.chatId, message.messageId);
+        flashMedia.data = downloaded.base64;
+        if (downloaded.mimetype) flashMedia.mimetype = downloaded.mimetype;
+      } catch (err) {
+        console.error('Failed to download media for flash', { error: safeOperationalError(err) });
+      }
+    }
+
     // 2. Diffusion du flash
     const flashBody = buildFlashMessage(command.message);
     let sentCount = 0;
@@ -712,7 +775,23 @@ async function handleCommunityCommand(message, command) {
       const chatId = group.chat_id || group.chatId;
       if (!chatId) continue;
       try {
-        await openWa.sendText(chatId, flashBody);
+        if (flashMedia?.data && (flashMedia.type === 'image' || flashMedia.mimetype?.startsWith('image/'))) {
+          await openWa.sendImage(chatId, {
+            base64: flashMedia.data,
+            mimetype: flashMedia.mimetype || 'image/jpeg',
+            caption: flashBody,
+            filename: flashMedia.filename || undefined,
+          });
+        } else if (flashMedia?.data && (flashMedia.type === 'video' || flashMedia.mimetype?.startsWith('video/'))) {
+          await openWa.sendVideo(chatId, {
+            base64: flashMedia.data,
+            mimetype: flashMedia.mimetype || 'video/mp4',
+            caption: flashBody,
+            filename: flashMedia.filename || undefined,
+          });
+        } else {
+          await openWa.sendText(chatId, flashBody);
+        }
         sentCount += 1;
       } catch (error) {
         console.error('Failed to broadcast flash to group', { group: group.name, error: safeOperationalError(error) });
@@ -722,9 +801,10 @@ async function handleCommunityCommand(message, command) {
       }
     }
 
+    const mediaNotice = flashMedia?.data ? '\n📷 Média inclus.' : '';
     await openWa.sendText(
       message.chatId,
-      `🚨 *FLASH INFO OFFICIEL DIFFUSÉ*\n\nDiffusé dans ${sentCount}/${monitoredGroups.length} groupe(s).\n\n🔒 *Rappel :* Tous les groupes sont actuellement verrouillés. Tapez *UNBLOCK ALL* lorsque vous souhaitez rouvrir les échanges.`,
+      `🚨 *FLASH INFO OFFICIEL DIFFUSÉ*\n\nDiffusé dans ${sentCount}/${monitoredGroups.length} groupe(s).${mediaNotice}\n\n🔒 *Rappel :* Tous les groupes sont actuellement verrouillés. Tapez *UNBLOCK ALL* lorsque vous souhaitez rouvrir les échanges.`,
     ).catch(() => {});
     return { handled: true, status: 'flash_broadcasted' };
   }
@@ -1677,11 +1757,12 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
 
     let status = result.inserted ? 'stored' : 'duplicate';
     if (result.inserted && !message.fromMe && groupPolicy.is_admin) {
-      const communityCommand = parseCommunityCommand(message.text);
+      const hasMedia = Boolean(message.media);
+      const communityCommand = parseCommunityCommand(message.text, { hasMedia });
       const moderationCommand = parseModerationCommand(message.text);
       const broadcastCommand = parseBroadcastCommand(message.text);
       const recapCommand = parseRecapCommand(message.text);
-      const communicationDraft = parseCommunicationDraft(message.text);
+      const communicationDraft = parseCommunicationDraft(message.text, hasMedia);
       if (communityCommand) {
         const commandResult = await handleCommunityCommand(message, communityCommand);
         status = commandResult.handled ? `community_${commandResult.status}` : commandResult.reason;

@@ -36,6 +36,60 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
     sendText(chatId, text) {
       return request('send_text', 'POST', '/messages/send-text', { chatId, text });
     },
+    sendImage(chatId, { base64, url, mimetype = 'image/jpeg', caption, filename } = {}) {
+      return request('send_image', 'POST', '/messages/send-image', {
+        chatId,
+        base64,
+        url,
+        mimetype,
+        caption,
+        filename,
+      });
+    },
+    sendVideo(chatId, { base64, url, mimetype = 'video/mp4', caption, filename } = {}) {
+      return request('send_video', 'POST', '/messages/send-video', {
+        chatId,
+        base64,
+        url,
+        mimetype,
+        caption,
+        filename,
+      });
+    },
+    sendDocument(chatId, { base64, url, mimetype = 'application/octet-stream', caption, filename } = {}) {
+      return request('send_document', 'POST', '/messages/send-document', {
+        chatId,
+        base64,
+        url,
+        mimetype,
+        caption,
+        filename,
+      });
+    },
+    async downloadMedia(chatId, messageId) {
+      const response = await fetch(
+        `${root}/api/sessions/${session}/messages/${encodeURIComponent(chatId)}/${encodeURIComponent(messageId)}/media`,
+        {
+          method: 'GET',
+          headers: {
+            'X-API-Key': apiKey,
+          },
+          signal: AbortSignal.timeout(timeoutMs),
+        },
+      );
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new OpenWaApiError('download_media', response.status, body?.message || body?.error || null);
+      }
+      const arrayBuffer = await response.arrayBuffer();
+      const buffer = Buffer.from(arrayBuffer);
+      const mimetype = response.headers.get('content-type') || 'application/octet-stream';
+      return {
+        buffer,
+        base64: buffer.toString('base64'),
+        mimetype,
+      };
+    },
     deleteMessage(chatId, messageId) {
       return request('delete_message', 'POST', '/messages/delete', {
         chatId,

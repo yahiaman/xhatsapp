@@ -6,12 +6,12 @@ export function createBroadcastCode() {
   return [...bytes].map((byte) => alphabet[byte % alphabet.length]).join('');
 }
 
-export function parseCommunicationDraft(value) {
+export function parseCommunicationDraft(value, hasMedia = false) {
   const normalized = String(value || '').replace(/\r\n/g, '\n');
   const lines = normalized.split('\n');
   if (String(lines[0] || '').trim().toUpperCase() !== 'COMMUNICATION') return null;
   const text = lines.slice(1).join('\n').trim();
-  if (!text) return { error: 'communication_empty' };
+  if (!text && !hasMedia) return { error: 'communication_empty' };
   if (text.length > 3500) return { error: 'communication_too_long' };
   return { text };
 }
@@ -28,19 +28,21 @@ export function parseBroadcastCommand(value) {
   return { action: actions[match[1]], code: match[2] };
 }
 
-export function buildBroadcastPreview({ code, text, destinations }) {
+export function buildBroadcastPreview({ code, text, destinations, mediaType }) {
   const targetLines = destinations.map((group) => (
     `• ${group.name || '(sans nom)'} (${group.reference})`
   ));
+  const mediaLabel = mediaType === 'image' ? '📷 Image jointe' : (mediaType === 'video' ? '🎥 Vidéo jointe' : (mediaType ? '📎 Fichier joint' : null));
   return [
     '📣 Brouillon de communication Xhatsapp',
     '',
     `Référence : ${code}`,
+    ...(mediaLabel ? [`Média : ${mediaLabel}`] : []),
     `Destinations figées : ${destinations.length}`,
     ...targetLines,
     '',
     'Message :',
-    text,
+    text || '_(Aucun texte)_',
     '',
     'Décision humaine requise :',
     `PUBLIER ${code}`,
