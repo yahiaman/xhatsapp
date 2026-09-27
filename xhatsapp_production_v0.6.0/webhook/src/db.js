@@ -537,7 +537,7 @@ export async function getPendingModerationAlert(code) {
   return result.rows[0] || null;
 }
 
-export async function resolveModerationAlert({ code, status, decisionMessageId, decisionByRef }) {
+export async function resolveModerationAlert({ code, status, decisionMessageId, decisionByRef, aiAnalysis = null }) {
   if (!['ignored', 'deleted'].includes(status)) throw new Error('invalid_moderation_status');
   const client = await pool.connect();
   try {
@@ -556,9 +556,10 @@ export async function resolveModerationAlert({ code, status, decisionMessageId, 
     await client.query(
       `UPDATE moderation_alerts
        SET status = $2, decision_message_id = $3, decision_by_ref = $4,
+           ai_analysis = coalesce($5, ai_analysis),
            decided_at = now(), last_error = NULL
        WHERE id = $1`,
-      [alert.rows[0].id, status, decisionMessageId, decisionByRef],
+      [alert.rows[0].id, status, decisionMessageId, decisionByRef, aiAnalysis ? JSON.stringify(aiAnalysis) : null],
     );
     await client.query(
       `UPDATE messages
@@ -574,6 +575,97 @@ export async function resolveModerationAlert({ code, status, decisionMessageId, 
   } finally {
     client.release();
   }
+}
+
+export async function resolveModerationAlertDirectly({ alertId, messageId, status = 'ignored', decisionByRef = 'system_ai_cleared', aiAnalysis = null }) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE moderation_alerts
+       SET status = $2, decision_by_ref = $3,
+           ai_analysis = $4,
+           decided_at = now(), last_error = NULL
+       WHERE id = $1`,
+      [alertId, status, decisionByRef, aiAnalysis ? JSON.stringify(aiAnalysis) : null],
+    );
+    await client.query(
+      `UPDATE messages
+       SET processing_status = $2, processed_at = now()
+       WHERE id = $1`,
+      [messageId, status === 'deleted' ? 'deleted' : 'moderation_ignored'],
+    );
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function autoResolveExpiredModerationAlerts(timeoutHours = 24) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const expired = await client.query(
+      `UPDATE moderation_alerts
+       SET status = 'ignored',
+           decision_by_ref = 'timeout_auto_ignored',
+           decided_at = now()
+       WHERE status = 'pending'
+         AND created_at < now() - ($1 || ' hours')::interval
+       RETURNING id, code, message_id`,
+      [timeoutHours],
+    );
+    if (expired.rowCount > 0) {
+      const messageIds = expired.rows.map((r) => r.message_id);
+      await client.query(
+        `UPDATE messages
+         SET processing_status = 'moderation_ignored', processed_at = now()
+         WHERE id = ANY($1::uuid[])`,
+        [messageIds],
+      );
+    }
+    await client.query('COMMIT');
+    return expired.rows;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export async function getRecentModerationExamples(limit = 6) {
+  const [ignoredRes, deletedRes] = await Promise.all([
+    pool.query(
+      `SELECT m.body
+       FROM moderation_alerts a
+       JOIN messages m ON m.id = a.message_id
+       WHERE a.status = 'ignored'
+         AND length(m.body) > 10
+         AND length(m.body) < 1000
+       ORDER BY a.decided_at DESC NULLS LAST, a.created_at DESC
+       LIMIT $1`,
+      [limit],
+    ),
+    pool.query(
+      `SELECT m.body
+       FROM moderation_alerts a
+       JOIN messages m ON m.id = a.message_id
+       WHERE a.status = 'deleted'
+         AND length(m.body) > 10
+         AND length(m.body) < 1000
+       ORDER BY a.decided_at DESC NULLS LAST, a.created_at DESC
+       LIMIT $1`,
+      [limit],
+    ),
+  ]);
+  return {
+    falsePositives: ignoredRes.rows.map((r) => r.body),
+    trueViolations: deletedRes.rows.map((r) => r.body),
+  };
 }
 
 export async function listModerationAlerts(limit = 100) {

@@ -94,8 +94,8 @@ export function createSummaryClient({
   provider = 'omniroute', baseUrl, apiKey = '', model, timeoutMs = 15 * 60_000,
 }) {
   const root = String(baseUrl).replace(/\/+$/, '');
-  async function generate(prompt, numPredict) {
-    const system = [
+  async function generate(prompt, numPredict, systemOverride = null) {
+    const defaultSystem = [
       'Tu es le rédacteur officiel des récapitulatifs quotidiens pour les groupes WhatsApp d’entraide du Hajj et de la Omra.',
       'Tu rédiges exclusivement en français un point d’information factuel, clair, chaleureux et bienveillant.',
       'Objectif : permettre aux pèlerins qui rentrent le soir du travail d’être rapidement à jour sur l’état d’avancement de la saison du Hajj et les conseils utiles.',
@@ -105,6 +105,7 @@ export function createSummaryClient({
       '- N’invente absolument rien, ne cite aucun numéro de téléphone ni identifiant technique, et évite les noms de personnes.',
       '- Si une rubrique n’a aucune matière ce jour-là, OMTS-LA INTÉGRALEMENT. Ne jamais écrire "Aucune information" ou "Rien à signaler".',
     ].join(' ');
+    const system = systemOverride || defaultSystem;
     const isOllama = provider === 'ollama';
     if (!['omniroute', 'ollama'].includes(provider)) throw new Error('summary_provider_invalid');
     if (!model || model === 'pending') throw new Error('summary_model_not_configured');

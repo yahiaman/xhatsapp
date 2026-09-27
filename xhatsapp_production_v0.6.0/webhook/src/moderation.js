@@ -26,13 +26,13 @@ export const DEFAULT_FORBIDDEN_AGENCIES = [
   'Al Raad Tour', 'Al Sirate Voyages', 'Al Wafa', 'Arafat Voyages', 'Ariane Voyages',
   'Asfar Travel France', 'Assafar Voyages', 'Association Nour', 'Autre Voyage',
   'Autre Voyage Falah Darain', 'Azmi', 'Bel Agir', 'Booking Makkah', 'Carnot Voyages',
-  'Chayma Travel', 'Fatima', 'CIDRA', 'Classy Travel', 'Dar Hajj', 'DGP', 'Djamila Voyage',
+  'Chayma Travel', 'Institut Fatima', 'CIDRA', 'Classy Travel', 'Dar Hajj', 'DGP', 'Djamila Voyage',
   'El Hayat', 'El Rajhi', 'Essakina Voyage', 'Favela', 'Go Makkah', 'Groupe Al Quds',
   'Hajj Oumra TV', 'Haramain Voyages', 'Haramein Voyages', 'Haramayn Voyages',
   'Hawwa Travel', 'Hedjaz', 'Hégire Voyage', 'Hikma Travel', 'Histoires Saintes',
-  'Ibtisama', 'Ibtisama Travel', 'Jawaz', 'Jil Voyages', 'Kawtar Voyages', 'Labayk',
-  'Labayk Travel', 'Maison du Hajj', 'Maison Blanche', 'Mawasem', 'Mon Hajj',
-  'Mon Guide Hajj', 'Nabi Voyages', 'Nawassik', 'Noor Travel', 'Nouvelles Frontières',
+  'Ibtisama', 'Ibtisama Travel', 'Jawaz', 'Jil Voyages', 'Kawtar Voyages',
+  'Labayk Travel', 'Maison du Hajj', 'Maison Blanche', 'Mawasem', 'Agence Mon Hajj',
+  'Mon Hajj Voyages', 'Mon Guide Hajj', 'Nabi Voyages', 'Nawassik', 'Noor Travel', 'Nouvelles Frontières',
   'Nouveau Regard', 'Oia Voyages', 'Omra Privée', 'Palma', 'Prisme Travel', 'Rissala',
   'Safra Travel', 'Salsabil Travel', 'Selectour', 'Sirat Travel', 'Soussi Travel',
   'Tahafut', 'Tawhid Travel', 'Tawva Voyages', 'Transalp', 'Traveler Spirit',
@@ -118,13 +118,45 @@ export function buildAgencyRegex(agencyName) {
   return regex;
 }
 
+export function isAgencyFalsePositive(text, normalizedAgency) {
+  if (normalizedAgency === 'mon hajj') {
+    const isExplicitAgency = /(?:l\s+agence|agence|voyages?|travel|tours?|prestataire|chez|formule|forfait|pack|offre|plateforme|site|passez\s+par|passer\s+par|recommande|recommandez|conseille|conseillez|choisir|choisissez)\s+mon\s+hajjs?\b/i.test(text)
+      || /\bmon\s+hajjs?\s+(?:voyages?|travel|tours?|organisation|services?)\b/i.test(text);
+    return !isExplicitAgency;
+  }
+
+  if (normalizedAgency === 'autre voyage') {
+    if (/\b(?:un|cet?|mon|ton|son|notre|votre|leur|aucun|tout)\s+autre\s+voyages?\b/i.test(text)) {
+      return true;
+    }
+  }
+
+  if (normalizedAgency === 'labayk' || normalizedAgency === 'labbayk') {
+    const isExplicitAgency = /\b(?:agence\s+)?labb?ayks?\s+(?:travel|voyages?|tourisme|tours?)\b/i.test(text)
+      || /\bagence\s+labb?ayks?\b/i.test(text);
+    return !isExplicitAgency;
+  }
+
+  if (normalizedAgency === 'fatima') {
+    const isExplicitAgency = /\binstitut\s+fatima\b/i.test(text)
+      || /\bcheikh\s+younes\b/i.test(text)
+      || /\bagence\s+fatima\b/i.test(text);
+    return !isExplicitAgency;
+  }
+
+  return false;
+}
+
 export function containsAgency(text, agencyName) {
   if (!text || !agencyName) return false;
+  const normalized = normalizeForModeration(agencyName);
+  if (isAgencyFalsePositive(text, normalized)) {
+    return false;
+  }
   const regex = buildAgencyRegex(agencyName);
   if (regex) {
     return regex.test(text);
   }
-  const normalized = normalizeForModeration(agencyName);
   return text.includes(normalized);
 }
 
@@ -140,17 +172,49 @@ function hasHumanitarianAppeal(text) {
 }
 
 function isExemptAgency(text, term) {
-  if (term === 'agence' && (text.includes('sans agence') || text.includes('sans-agence'))) {
-    return true;
+  if (term === 'agence' || term === 'agency') {
+    if (text.includes('sans agence') || text.includes('sans-agence')) {
+      return true;
+    }
+    const isGenericQuestionOrChoice = /\b(?:sans|aucune|pas d|pas une|choisir une|choisi une|prendre une|passer par une|passe par une|besoin d une|demander a une|demande a une|obliger de passer par une|oblige de passer par une|conseiller une|conseillez une|recommander une|cherche une|avec une agence ou|agence oui ou non|agence oui ou pas|guide ou l agence|pas meme les agences?)\b/i.test(text)
+      || /\b(?:faut il|doit on|est ce qu on doit|on doit|peut on|comment faire si|si je connais)\b.*\bagences?\b/i.test(text)
+      || /\bagences?\b.*\b(?:ou pas|ou non|pour faire quoi)\b/i.test(text);
+    if (isGenericQuestionOrChoice) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasPhoneSignal(original) {
+  const withoutMentions = original.replace(/@\d{5,}/g, '');
+  return /(?:\+?\d[\s().-]*){8,}/.test(withoutMentions);
+}
+
+function hasCurrencySignal(original) {
+  return /(?:€|\beur\b|\bsar\b|﷼|ريال)/i.test(original);
+}
+
+function hasPriceSignal(original, normalized) {
+  if (/\b\d+(?:[.,]\d{1,2})?\s*(?:€|euros?|\beur\b|\bsar\b|riyals?|riales?|﷼|ريال)\b/i.test(original)) return true;
+  if (/(?:€|\bsar\b|﷼|ريال)\s*\d+/i.test(original)) return true;
+
+  const numbers = normalized.match(/\b\d{2,5}\b/g) || [];
+  for (const num of numbers) {
+    const n = parseInt(num, 10);
+    if (n >= 2020 && n <= 2035) continue;
+    const isUnit = new RegExp(`\\b${num}\\s*(?:ans?|jours?|nuits?|mois|semaines?|h|heures?|min|minutes?|personnes?|pax|pers|places?)\\b`, 'i').test(normalized);
+    if (isUnit) continue;
+    if (new RegExp(`(?:a|pour|cout|coute|coutent|tarif|prix|payer|paye|facture|vendu|vendre|versement)\\s+${num}\\b`, 'i').test(normalized)) {
+      return true;
+    }
   }
   return false;
 }
 
 function hasContactOrPriceSignal(original, normalized) {
-  return /https?:\/\/|www\.|wa\.me\//i.test(original)
-    || /(?:\+?\d[\s().-]*){8,}/.test(original)
-    || /(?:€|eur\b|sar\b|﷼|ريال)/i.test(original)
-    || /\b\d{2,5}(?:[.,]\d{1,2})?\b/.test(normalized);
+  const hasUrl = /https?:\/\/|www\.|wa\.me\//i.test(original);
+  return hasUrl || hasPhoneSignal(original) || hasCurrencySignal(original) || hasPriceSignal(original, normalized);
 }
 
 export function detectModeration(value, customAgencies = [], customKeywords = {}) {
@@ -164,6 +228,7 @@ export function detectModeration(value, customAgencies = [], customKeywords = {}
     const normalized = normalizeForModeration(agency);
     if (!normalized) continue;
     if (normalized === 'nusuk' || normalized === 'entraide nusuk hajj' || normalized === 'sans agence' || normalized === 'ithraa al khair') continue;
+    if (isAgencyFalsePositive(text, normalized)) continue;
     if (containsAgency(text, agency)) {
       matchedAgencies.push(agency);
     }
@@ -194,7 +259,13 @@ export function detectModeration(value, customAgencies = [], customKeywords = {}
   }
 
   if (donation.length) categories.push('donation');
-  if (advertising.length >= 2
+
+  const isQuestion = /\?|\b(?:quel|quelle|quelles|quels|quand|comment|combien|est ce|savez vous|dite moi|dis moi|qui sait)\b/i.test(text);
+  const isSaleOpeningDiscussion = /\b(?:ouverture des ventes|ouvre les ventes?|phase de ventes?|date de ventes?)\b/i.test(text);
+  const isAdByCount = (advertising.length >= 3)
+    || (advertising.length >= 2 && !isQuestion && !isSaleOpeningDiscussion);
+
+  if (isAdByCount
       || (advertising.length >= 1 && hasContactOrPriceSignal(original, text))
       || customAds.some((adTerm) => containsTerm(text, adTerm))) {
     categories.push('advertising');
@@ -227,7 +298,7 @@ export function parseModerationCommand(value) {
 }
 
 export function buildModerationAlert({
-  code, categories, groupName, groupReference, senderName, text, autoDeleted = false, matchedAgencies = [],
+  code, categories, groupName, groupReference, senderName, text, autoDeleted = false, matchedAgencies = [], aiAnalysis = null,
 }) {
   const labels = {
     agency: 'agence ou prestataire',
@@ -262,11 +333,18 @@ export function buildModerationAlert({
     ].join('\n');
   }
 
+  const aiLines = aiAnalysis ? [
+    `🤖 *Arbitrage IA :* ${aiAnalysis.isViolation ? '⚠️ Infraction suspectée' : 'ℹ️ Faux positif probable'} (${Math.round((aiAnalysis.confidence || 0) * 100)}%)`,
+    aiAnalysis.reason ? `💡 *Analyse :* _${aiAnalysis.reason}_` : '',
+    '',
+  ].filter(Boolean) : [];
+
   return [
     '🚨 *Alerte de modération Xhatsapp*',
     '',
     `🏷️ *Référence :* ${code}`,
     `📋 *Motif :* ${categories.map((category) => labels[category] || category).join(', ')}`,
+    ...aiLines,
     `👥 *Groupe :* ${groupName || '(sans nom)'} (${groupReference})`,
     `👤 *Auteur :* ${senderName || 'Membre non identifié'}`,
     '',

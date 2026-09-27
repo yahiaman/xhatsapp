@@ -3,6 +3,7 @@ import {
   addExemptModerator,
   addForbiddenAgency,
   addModerationKeyword,
+  autoResolveExpiredModerationAlerts,
   checkDatabase,
   cancelBroadcastDraft,
   claimBroadcastDraft,
@@ -17,6 +18,7 @@ import {
   getCommunityTemplate,
   getGroupPolicy,
   getPendingModerationAlert,
+  getRecentModerationExamples,
   listCommunityTemplates,
   listExemptModerators,
   listForbiddenAgencies,
@@ -35,6 +37,7 @@ import {
   recordModerationAlertError,
   recordBroadcastDraftError,
   resolveModerationAlert,
+  resolveModerationAlertDirectly,
   storeMessage,
   syncGroupInventory,
   updateGroupPolicy,
@@ -79,6 +82,7 @@ import {
   detectModeration,
   parseModerationCommand,
 } from './moderation.js';
+import { evaluateModerationWithAi } from './moderation_ai.js';
 import { createOpenWaClient, OpenWaApiError } from './openwa.js';
 import {
   buildBroadcastPreview,
@@ -120,6 +124,7 @@ import {
   detectResourceMention,
   isPhoneBanned,
   isPhoneExempt,
+  kickBannedMemberFromAllGroupsAndCommunitiesCore,
   normalizePhoneNumber,
   parseCommunityCommand,
 } from './community.js';
@@ -208,6 +213,25 @@ async function reloadModerationKeywords() {
   }
 }
 
+let cachedModerationExamples = null;
+let cachedModerationExamplesExpiry = 0;
+
+async function getCachedModerationExamples() {
+  if (cachedModerationExamples && Date.now() < cachedModerationExamplesExpiry) {
+    return cachedModerationExamples;
+  }
+  try {
+    cachedModerationExamples = await getRecentModerationExamples(6);
+    cachedModerationExamplesExpiry = Date.now() + 5 * 60_000;
+    return cachedModerationExamples;
+  } catch (error) {
+    console.warn('Failed to load recent moderation examples', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+    return { falsePositives: [], trueViolations: [] };
+  }
+}
+
 let exemptModeratorsCache = [];
 
 async function reloadExemptModerators() {
@@ -288,10 +312,16 @@ async function newModerationAlert(messageInternalId, sourceGroupId, detection, s
   throw new Error('moderation_code_generation_failed');
 }
 
-async function notifyModerators(message, groupPolicy, messageInternalId, detection, autoDeleted = false) {
+async function notifyModerators(message, groupPolicy, messageInternalId, detection, autoDeleted = false, aiAnalysis = null) {
   const status = autoDeleted ? 'auto_deleted' : 'pending';
   const alert = await newModerationAlert(messageInternalId, groupPolicy.id, detection, status);
   if (!alert) return null;
+  if (aiAnalysis) {
+    await pool.query(
+      'UPDATE moderation_alerts SET ai_analysis = $1 WHERE id = $2',
+      [JSON.stringify(aiAnalysis), alert.id],
+    ).catch(() => {});
+  }
   try {
     const admin = await getAdminTarget();
     const text = buildModerationAlert({
@@ -303,6 +333,7 @@ async function notifyModerators(message, groupPolicy, messageInternalId, detecti
       text: message.text,
       autoDeleted,
       matchedAgencies: detection.matchedAgencies || [],
+      aiAnalysis,
     });
     const sent = await openWa.sendText(admin.chat_id, text);
     await markModerationAlertNotified(alert.id, responseMessageId(sent));
@@ -334,7 +365,10 @@ async function handleModerationCommand(message, command) {
   };
   if (command.action === 'ignore') {
     const resolved = await resolveModerationAlert({ ...decision, status: 'ignored' });
-    if (resolved) await openWa.sendText(message.chatId, `✅ ${command.code} ignorée. Aucune suppression effectuée.`);
+    if (resolved) {
+      cachedModerationExamplesExpiry = 0;
+      await openWa.sendText(message.chatId, `✅ ${command.code} ignorée. Aucune suppression effectuée.`);
+    }
     return { handled: Boolean(resolved), status: 'ignored' };
   }
 
@@ -342,6 +376,7 @@ async function handleModerationCommand(message, command) {
     await openWa.deleteMessage(alert.chat_id, alert.message_id);
     const resolved = await resolveModerationAlert({ ...decision, status: 'deleted' });
     if (resolved) {
+      cachedModerationExamplesExpiry = 0;
       await openWa.sendText(message.chatId, `🗑️ ${command.code} supprimée pour tous.`).catch(() => {});
     }
     return { handled: Boolean(resolved), status: 'deleted' };
@@ -946,55 +981,12 @@ async function handleCommunityCommand(message, command) {
       console.error('Failed to add banned member to DB', { error: safeOperationalError(error) });
     }
 
-    // 2. Immediate kick from all monitored groups + reject pending requests
-    const allGroups = await listGroupPolicies();
-    const monitoredGroups = allGroups.filter(
-      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
-    );
-
-    const kickedFromGroups = [];
-    for (const group of monitoredGroups) {
-      const chatId = group.chat_id || group.chatId;
-      if (!chatId) continue;
-      try {
-        const groupInfo = await openWa.getGroup(chatId).catch(() => null);
-        const participant = groupInfo?.participants?.find((p) => {
-          const pPhone = p.number ? p.number.replace(/\D/g, '') : p.id?.split('@')[0].replace(/\D/g, '');
-          const pNorm = normalizePhoneNumber(pPhone);
-          return (
-            pPhone === targetDigits ||
-            pNorm === normalizedTarget ||
-            (normalizedTarget.length >= 9 && pNorm.endsWith(normalizedTarget)) ||
-            (pNorm.length >= 9 && normalizedTarget.endsWith(pNorm))
-          );
-        });
-
-        if (participant) {
-          await openWa.removeParticipants(chatId, [participant.id]);
-          kickedFromGroups.push(group.name || group.inventory_ref || chatId);
-          console.log('Banned member kicked from group', { group: group.name, participant: participant.id });
-        }
-
-        // Also reject pending requests if any
-        const requests = await openWa.getMembershipRequests(chatId).catch(() => []);
-        const matchingReq = requests.find((req) => {
-          const rPhone = req.id?.split('@')[0].replace(/\D/g, '');
-          const rNorm = normalizePhoneNumber(rPhone);
-          return (
-            rPhone === targetDigits ||
-            rNorm === normalizedTarget ||
-            (normalizedTarget.length >= 9 && rNorm.endsWith(normalizedTarget)) ||
-            (rNorm.length >= 9 && normalizedTarget.endsWith(rNorm))
-          );
-        });
-        if (matchingReq) {
-          await openWa.rejectMembershipRequests(chatId, [matchingReq.id]);
-          console.log('Banned member pending request rejected', { group: group.name, req: matchingReq.id });
-        }
-      } catch (error) {
-        console.error('Failed to kick banned member from group', { group: group.name, error: safeOperationalError(error) });
-      }
-    }
+    // 2. Immediate kick from all groups and communities + reject pending requests
+    const kickedFromGroups = await kickBannedMemberFromAllGroupsAndCommunities({
+      openWa,
+      targetDigits,
+      normalizedTarget,
+    });
 
     const successMsg = buildBanSuccessMessage({
       phone: normalizedTarget,
@@ -1016,7 +1008,7 @@ async function handleCommunityCommand(message, command) {
       if (deleted) {
         await openWa.sendText(
           message.chatId,
-          `✅ *MEMBRE DÉBANNI*\n───────────────────────────\n👤 *Numéro :* +${deleted.normalized_phone || normalizedTarget}\n\nLe numéro a été retiré de la liste noire. Le membre peut à nouveau rejoindre les groupes.`,
+          `✅ *MEMBRE DÉBANNI*\n───────────────────────────\n👤 *Numéro :* +${deleted.normalized_phone || normalizedTarget}\n\nLe numéro a été retiré de la liste noire. Le membre peut à nouveau rejoindre les groupes et communautés.`,
         ).catch(() => {});
       } else {
         await openWa.sendText(
@@ -1143,7 +1135,7 @@ async function resolveParticipantDetails(openWaClient, participantId) {
 
 function participantMatches(p, resolved) {
   if (!p) return false;
-  const pId = typeof p === 'string' ? p : p.id;
+  const pId = typeof p === 'string' ? p : (typeof p?.id === 'string' ? p.id : p?.id?._serialized || '');
   const pNumber = typeof p === 'object' && p.number ? p.number.replace(/\D/g, '') : null;
   const pIdDigits = pId ? pId.split('@')[0].replace(/\D/g, '') : null;
 
@@ -1158,7 +1150,7 @@ function participantMatches(p, resolved) {
 
 function requestMatches(req, resolved) {
   if (!req) return false;
-  const reqId = req.participantId || req.id;
+  const reqId = typeof req === 'string' ? req : (typeof req?.participantId === 'string' ? req.participantId : (typeof req?.id === 'string' ? req.id : req?.id?._serialized || ''));
   if (!reqId) return false;
   if (resolved.rawId && reqId === resolved.rawId) return true;
   if (resolved.chatId && reqId === resolved.chatId) return true;
@@ -1254,6 +1246,24 @@ async function prewarmGroupAdminsCache() {
   }
 }
 
+async function kickBannedMemberFromAllGroupsAndCommunities({
+  openWa,
+  targetDigits,
+  normalizedTarget,
+}) {
+  return kickBannedMemberFromAllGroupsAndCommunitiesCore({
+    openWa,
+    targetDigits,
+    normalizedTarget,
+    getAdminTargetFn: getAdminTarget,
+    listGroupPoliciesFn: listGroupPolicies,
+    readGroupInventoryFn: readGroupInventory,
+    inventoryFilePath: inventoryPath,
+    knownLidPhoneMap: KNOWN_LID_PHONE_MAP,
+    resolveParticipantDetailsFn: (client, id) => resolveParticipantDetailsCached(client, id),
+  });
+}
+
 async function handleGroupJoinEvent(payload) {
   const data = payload?.data || payload?.message || payload || {};
   const groupId = data?.groupId || payload?.groupId || data?.chatId || payload?.chatId;
@@ -1273,41 +1283,42 @@ async function handleGroupJoinEvent(payload) {
     return { ignored: true, reason: 'missing_group_or_participants' };
   }
 
+  const adminTarget = await getAdminTarget().catch(() => null);
   const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
-  if (!groupPolicy || !(groupPolicy.enabled ?? false) || !(groupPolicy.is_monitored || groupPolicy.isMonitored)) {
-    console.log('Group join event ignored: group not monitored or disabled', {
-      group_id: groupId,
-      enabled: groupPolicy?.enabled,
-      monitored: groupPolicy?.is_monitored || groupPolicy?.isMonitored,
-    });
-    return { ignored: true, reason: 'group_not_monitored' };
+
+  const isAdminGroup = (adminTarget && (adminTarget.chat_id === groupId || adminTarget.chatId === groupId)) || Boolean(groupPolicy?.is_admin || groupPolicy?.isAdmin);
+  if (isAdminGroup) {
+    console.log('Group join event in admin group, ignoring moderation/ban kick', { group_id: groupId });
+    return { ignored: true, reason: 'admin_group' };
   }
 
-  const allGroups = await listGroupPolicies();
-  const otherMonitoredGroups = allGroups.filter(
-    (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin) && (g.chat_id || g.chatId) !== groupId,
-  );
+  const isMonitored = Boolean(groupPolicy && (groupPolicy.enabled ?? false) && (groupPolicy.is_monitored || groupPolicy.isMonitored));
 
-  const adminTarget = await getAdminTarget().catch(() => null);
+  let otherGroupsInfo = [];
+  if (isMonitored) {
+    const allGroups = await listGroupPolicies().catch(() => []);
+    const otherMonitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin) && (g.chat_id || g.chatId) !== groupId,
+    );
 
-  const otherGroupsInfo = [];
-  for (const other of otherMonitoredGroups) {
-    const otherChatId = other.chat_id || other.chatId;
-    if (!otherChatId) continue;
-    try {
-      const info = await openWa.getGroup(otherChatId);
-      if (info && Array.isArray(info.participants)) {
-        otherGroupsInfo.push({
-          group: other,
-          chatId: otherChatId,
-          participants: info.participants,
+    for (const other of otherMonitoredGroups) {
+      const otherChatId = other.chat_id || other.chatId;
+      if (!otherChatId) continue;
+      try {
+        const info = await openWa.getGroup(otherChatId);
+        if (info && Array.isArray(info.participants)) {
+          otherGroupsInfo.push({
+            group: other,
+            chatId: otherChatId,
+            participants: info.participants,
+          });
+        }
+      } catch (error) {
+        console.warn('Could not inspect other group members for duplicate check', {
+          other_group: other.name,
+          error: safeOperationalError(error),
         });
       }
-    } catch (error) {
-      console.warn('Could not inspect other group members for duplicate check', {
-        other_group: other.name,
-        error: safeOperationalError(error),
-      });
     }
   }
 
@@ -1332,10 +1343,10 @@ async function handleGroupJoinEvent(payload) {
       (phone && isPhoneBanned(phone, bannedMembersCache)) ||
       (directChatId && isPhoneBanned(directChatId, bannedMembersCache))
     ) {
-      console.log('Group join: BANNED member detected, kicking immediately', {
+      console.log('Group join: BANNED member detected, kicking immediately from group/community', {
         participant_ref: safeReference(participantId),
         resolved_phone: phone ? `+${phone}` : 'unknown',
-        group: groupPolicy.name,
+        group: groupPolicy?.name || groupId,
       });
 
       try {
@@ -1351,11 +1362,15 @@ async function handleGroupJoinEvent(payload) {
         const bannedAlert = buildBannedAttemptAlert({
           phone,
           senderReference: safeReference(participantId),
-          groupName: groupPolicy.name || groupPolicy.inventory_ref || 'Groupe surveillé',
+          groupName: groupPolicy?.name || groupPolicy?.inventory_ref || groupId,
           isRequest: false,
         });
         await openWa.sendText(adminTarget.chat_id, bannedAlert).catch(() => {});
       }
+      continue;
+    }
+
+    if (!isMonitored) {
       continue;
     }
 
@@ -1473,43 +1488,44 @@ async function handleGroupJoinRequestEvent(payload) {
     return { ignored: true, reason: 'missing_group_or_participants' };
   }
 
+  const adminTarget = await getAdminTarget().catch(() => null);
   const groupPolicy = await getGroupPolicy(groupId).catch(() => null);
-  if (!groupPolicy || !(groupPolicy.enabled ?? false) || !(groupPolicy.is_monitored || groupPolicy.isMonitored)) {
-    console.log('Group join request event ignored: group not monitored or disabled', {
-      group_id: groupId,
-      enabled: groupPolicy?.enabled,
-      monitored: groupPolicy?.is_monitored || groupPolicy?.isMonitored,
-    });
-    return { ignored: true, reason: 'group_not_monitored' };
+
+  const isAdminGroup = (adminTarget && (adminTarget.chat_id === groupId || adminTarget.chatId === groupId)) || Boolean(groupPolicy?.is_admin || groupPolicy?.isAdmin);
+  if (isAdminGroup) {
+    console.log('Group join request event in admin group, ignoring', { group_id: groupId });
+    return { ignored: true, reason: 'admin_group' };
   }
 
-  const allGroups = await listGroupPolicies();
-  const otherMonitoredGroups = allGroups.filter(
-    (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin) && (g.chat_id || g.chatId) !== groupId,
-  );
+  const isMonitored = Boolean(groupPolicy && (groupPolicy.enabled ?? false) && (groupPolicy.is_monitored || groupPolicy.isMonitored));
 
-  const adminTarget = await getAdminTarget().catch(() => null);
+  let otherGroupsInfo = [];
+  if (isMonitored) {
+    const allGroups = await listGroupPolicies().catch(() => []);
+    const otherMonitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin) && (g.chat_id || g.chatId) !== groupId,
+    );
 
-  const otherGroupsInfo = [];
-  for (const other of otherMonitoredGroups) {
-    const otherChatId = other.chat_id || other.chatId;
-    if (!otherChatId) continue;
-    try {
-      const [groupInfo, membershipRequests] = await Promise.all([
-        openWa.getGroup(otherChatId).catch(() => null),
-        openWa.getMembershipRequests(otherChatId).catch(() => []),
-      ]);
-      otherGroupsInfo.push({
-        group: other,
-        chatId: otherChatId,
-        participants: Array.isArray(groupInfo?.participants) ? groupInfo.participants : [],
-        membershipRequests: Array.isArray(membershipRequests) ? membershipRequests : [],
-      });
-    } catch (error) {
-      console.warn('Could not inspect other group members for duplicate join request check', {
-        other_group: other.name,
-        error: safeOperationalError(error),
-      });
+    for (const other of otherMonitoredGroups) {
+      const otherChatId = other.chat_id || other.chatId;
+      if (!otherChatId) continue;
+      try {
+        const [groupInfo, membershipRequests] = await Promise.all([
+          openWa.getGroup(otherChatId).catch(() => null),
+          openWa.getMembershipRequests(otherChatId).catch(() => []),
+        ]);
+        otherGroupsInfo.push({
+          group: other,
+          chatId: otherChatId,
+          participants: Array.isArray(groupInfo?.participants) ? groupInfo.participants : [],
+          membershipRequests: Array.isArray(membershipRequests) ? membershipRequests : [],
+        });
+      } catch (error) {
+        console.warn('Could not inspect other group members for duplicate join request check', {
+          other_group: other.name,
+          error: safeOperationalError(error),
+        });
+      }
     }
   }
 
@@ -1537,7 +1553,7 @@ async function handleGroupJoinRequestEvent(payload) {
       console.log('Group join request: BANNED requester detected, rejecting immediately', {
         participant_ref: safeReference(participantId),
         resolved_phone: phone ? `+${phone}` : 'unknown',
-        group: groupPolicy.name,
+        group: groupPolicy?.name || groupId,
       });
 
       try {
@@ -1553,11 +1569,15 @@ async function handleGroupJoinRequestEvent(payload) {
         const bannedAlert = buildBannedAttemptAlert({
           phone,
           senderReference: safeReference(participantId),
-          groupName: groupPolicy.name || groupPolicy.inventory_ref || 'Nouveau groupe',
+          groupName: groupPolicy?.name || groupPolicy?.inventory_ref || groupId,
           isRequest: true,
         });
         await openWa.sendText(adminTarget.chat_id, bannedAlert).catch(() => {});
       }
+      continue;
+    }
+
+    if (!isMonitored) {
       continue;
     }
 
@@ -1651,6 +1671,7 @@ async function handleGroupJoinRequestEvent(payload) {
 
   return { handled: true };
 }
+
 
 const app = express();
 app.disable('x-powered-by');
@@ -1856,8 +1877,41 @@ app.post('/webhook/openwa', express.raw({ type: 'application/json', limit: '2mb'
           const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, true);
           status = alert ? 'agency_auto_deleted' : status;
         } else if (detection.flagged) {
-          const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false);
-          status = alert ? 'flagged' : status;
+          let aiAnalysis = null;
+          try {
+            aiAnalysis = await evaluateModerationWithAi({
+              summaryClient,
+              messageText: message.text,
+              flaggedCategories: detection.categories,
+              matchedTerms: detection.matchedTerms,
+              getExamples: () => getCachedModerationExamples(),
+            });
+          } catch (error) {
+            console.warn('AI moderation evaluation failed', { error: error?.message || error });
+          }
+
+          if (aiAnalysis && !aiAnalysis.isViolation && aiAnalysis.confidence >= 0.70) {
+            const alert = await newModerationAlert(result.internalId, groupPolicy.id, detection, 'ignored');
+            if (alert) {
+              await resolveModerationAlertDirectly({
+                alertId: alert.id,
+                messageId: result.internalId,
+                status: 'ignored',
+                decisionByRef: 'system_ai_cleared',
+                aiAnalysis,
+              });
+            }
+            console.log('AI moderation dismissed false positive (silent bypass)', {
+              chat_ref: safeReference(message.chatId),
+              categories: detection.categories,
+              confidence: aiAnalysis.confidence,
+              reason: aiAnalysis.reason,
+            });
+            status = 'ai_moderation_cleared';
+          } else {
+            const alert = await notifyModerators(message, groupPolicy, result.internalId, detection, false, aiAnalysis);
+            status = alert ? 'flagged' : status;
+          }
         } else {
           const panic = detectPanic(message.text);
           if (panic.isPanic) {
@@ -2291,53 +2345,11 @@ app.post('/admin/api/blacklist', async (request, response) => {
     const banned = await addBannedMember(rawTarget, parsed.reason, 'web_admin');
     await reloadBannedMembers();
 
-    const allGroups = await listGroupPolicies();
-    const monitoredGroups = allGroups.filter(
-      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
-    );
-
-    const kickedFromGroups = [];
-    for (const group of monitoredGroups) {
-      const chatId = group.chat_id || group.chatId;
-      if (!chatId) continue;
-      try {
-        const groupInfo = await openWa.getGroup(chatId).catch(() => null);
-        const participant = groupInfo?.participants?.find((p) => {
-          const pPhone = p.number ? p.number.replace(/\D/g, '') : p.id?.split('@')[0].replace(/\D/g, '');
-          const pNorm = normalizePhoneNumber(pPhone);
-          return (
-            pPhone === targetDigits ||
-            pNorm === normalizedTarget ||
-            (normalizedTarget.length >= 9 && pNorm.endsWith(normalizedTarget)) ||
-            (pNorm.length >= 9 && normalizedTarget.endsWith(pNorm))
-          );
-        });
-
-        if (participant) {
-          await openWa.removeParticipants(chatId, [participant.id]);
-          kickedFromGroups.push(group.name || group.inventory_ref || chatId);
-          console.log('Banned member kicked from group via web admin', { group: group.name, participant: participant.id });
-        }
-
-        const requests = await openWa.getMembershipRequests(chatId).catch(() => []);
-        const matchingReq = requests.find((req) => {
-          const rPhone = req.id?.split('@')[0].replace(/\D/g, '');
-          const rNorm = normalizePhoneNumber(rPhone);
-          return (
-            rPhone === targetDigits ||
-            rNorm === normalizedTarget ||
-            (normalizedTarget.length >= 9 && rNorm.endsWith(normalizedTarget)) ||
-            (rNorm.length >= 9 && normalizedTarget.endsWith(rNorm))
-          );
-        });
-        if (matchingReq) {
-          await openWa.rejectMembershipRequests(chatId, [matchingReq.id]);
-          console.log('Banned member pending request rejected via web admin', { group: group.name, req: matchingReq.id });
-        }
-      } catch (error) {
-        console.error('Failed to kick banned member from group via web admin', { group: group.name, error: safeOperationalError(error) });
-      }
-    }
+    const kickedFromGroups = await kickBannedMemberFromAllGroupsAndCommunities({
+      openWa,
+      targetDigits,
+      normalizedTarget,
+    });
 
     response.json({ ok: true, banned, kickedGroups: kickedFromGroups });
   } catch (error) {
@@ -2577,11 +2589,29 @@ async function processDueSchedule(schedule, due) {
   }
 }
 
+let lastExpiredAlertsCheck = 0;
+async function checkExpiredModerationAlerts() {
+  if (Date.now() - lastExpiredAlertsCheck < 10 * 60_000) return;
+  lastExpiredAlertsCheck = Date.now();
+  try {
+    const expired = await autoResolveExpiredModerationAlerts(24);
+    if (expired && expired.length > 0) {
+      console.log('Auto-resolved expired moderation alerts (24h timeout)', { count: expired.length });
+      cachedModerationExamplesExpiry = 0;
+    }
+  } catch (error) {
+    console.warn('Failed to auto-resolve expired moderation alerts', {
+      error: error instanceof Error ? error.message : 'unknown_error',
+    });
+  }
+}
+
 let scheduleTickRunning = false;
 async function scheduleTick() {
   if (scheduleTickRunning) return;
   scheduleTickRunning = true;
   try {
+    await checkExpiredModerationAlerts();
     const schedules = await listGroupSchedules({ enabledOnly: true });
     const now = new Date();
     for (const schedule of schedules) {

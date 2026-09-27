@@ -237,3 +237,75 @@ test('builds an admin alert for auto-deleted agency citation', () => {
   assert.doesNotMatch(alert, /IGNORER AG77XX/);
   assert.doesNotMatch(alert, /@g\.us|@c\.us|@lid/);
 });
+
+test('distinguishes personal French expressions from forbidden agency citations', () => {
+  // Saliha's exact message: asking about mahram and group for her own hajj in 2027
+  const salihaMessage = `Salam Alaykoum, tout d’abord Baraklaoufikoum pour tout ce que vous faites pour nous faciliter les démarches, qu’Allah remplisse vos balances inchallah!
+Pour ma part je souhaite accomplir mon Hajj en 2027 si Allah me fait part de son invitation inchallah, je suis une femme seule et je sais que je dois être accompagnée, mon frère aîné n’est pas sûr encore de m’accompagner, est ce que faire parti d’un groupe sur place peut remplacer un murham? Barak laoufik pour la réponse à cette question.`;
+  const salihaResult = detectModeration(salihaMessage, ['Mon Hajj']);
+  assert.equal(salihaResult.flagged, false);
+  assert.equal(salihaResult.isForbiddenAgency, false);
+
+  // Common personal Hajj phrases
+  assert.equal(detectModeration('Je prépare mon hajj pour l’an prochain').flagged, false);
+  assert.equal(detectModeration('C’est mon premier hajj inchallah').flagged, false);
+  assert.equal(detectModeration('Pour mon hajj 2027 comment faire ?').flagged, false);
+  assert.equal(detectModeration('Qu’Allah accepte mon hajj et mes douas').flagged, false);
+  assert.equal(detectModeration('Est-ce que mon hajj est validé sur Nusuk ?').flagged, false);
+
+  // But actual agency citations MUST be flagged
+  const agencyExplicit1 = detectModeration('Je vous conseille l’agence Mon Hajj pour partir', ['Mon Hajj']);
+  assert.equal(agencyExplicit1.flagged, true);
+  assert.equal(agencyExplicit1.isForbiddenAgency, true);
+
+  const agencyExplicit2 = detectModeration('Mon Hajj Voyages propose des forfaits');
+  assert.equal(agencyExplicit2.flagged, true);
+  assert.equal(agencyExplicit2.isForbiddenAgency, true);
+
+  const agencyExplicit3 = detectModeration('J’ai réservé chez Mon Hajj', ['Mon Hajj']);
+  assert.equal(agencyExplicit3.flagged, true);
+  assert.equal(agencyExplicit3.isForbiddenAgency, true);
+
+  // Talbiyah invocation vs Labayk Travel
+  assert.equal(detectModeration('Labayk Allahoumma Labayk, Labayka la charika laka labayk').flagged, false);
+  const labaykTravel = detectModeration('Avis sur Labayk Travel ?');
+  assert.equal(labaykTravel.flagged, true);
+  assert.equal(labaykTravel.isForbiddenAgency, true);
+
+  // Female first name Fatima vs Institut Fatima
+  assert.equal(detectModeration('Bonjour je m’appelle Fatima et j’ai une question').flagged, false);
+  assert.equal(detectModeration('Ma sœur Fatima part avec moi').flagged, false);
+  const institutFatima = detectModeration('Les cours de l’Institut Fatima sont top');
+  assert.equal(institutFatima.flagged, true);
+  assert.equal(institutFatima.isForbiddenAgency, true);
+
+  // "Un autre voyage" vs agency "Autre Voyage"
+  assert.equal(detectModeration('Je ferai un autre voyage l’année prochaine').flagged, false);
+  const autreVoyage = detectModeration('Passez par l’agence Autre Voyage pour votre départ');
+  assert.equal(autreVoyage.flagged, true);
+  assert.equal(autreVoyage.isForbiddenAgency, true);
+});
+
+test('does not flag legitimate pilgrim questions and discussions as false positives', () => {
+  // Generic questions about agencies
+  assert.equal(detectModeration('Est-ce qu’on doit choisir une agence pour partir au hajj ?').flagged, false);
+  assert.equal(detectModeration('D’accord mais si je connais aucune agence je fais comment ?').flagged, false);
+  assert.equal(detectModeration('Et une fois sur place inshallah, le passport, c’est nous qui le gardons avec nous, on est d’accord ? Pas le guide ou l’agence').flagged, false);
+  assert.equal(detectModeration('Une agence pour faire quoi au juste. Il ne pourront pas valider le profil à la place de nusuk.').flagged, false);
+  assert.equal(detectModeration('Svp comme je suis incapable de suivre toute ses démarches, est ce que mieux que je demande a une agence').flagged, false);
+
+  // Legitimate discussions mentioning years (2026/2027) with price, visa or sales
+  assert.equal(detectModeration('Sinon je pense que les prix 2027 par rapport à 2026 seront plus chers vu le contexte géopolitique de la région').flagged, false);
+  assert.equal(detectModeration('Slm aleykoum j\'ai une question lors de l\'inscription il demande si on a déjà obtenu un visa antérieurement si oui indiquer le numéro de visa. J\'ai effectué la Omra en 2024 mais je n\'ai plus le numéro de visa').flagged, false);
+  assert.equal(detectModeration('La 1ère vente a eu lieu dimanche 1er février 2026').flagged, false);
+  assert.equal(detectModeration('Salem aleykoum les frères et sœurs dite moi vous savez un peu près quelle jours il ouvre les vente de package du Hajj 2027 ?').flagged, false);
+
+  // Words ending in "eur" (ampleur, meilleur, leur) not confused with currency EUR
+  assert.equal(detectModeration('J’ai été sincèrement bluffé par les transports, l’hébergement, la sécurité... ampleur remarquable de l’organisation').flagged, false);
+  assert.equal(detectModeration('Revolut c’est le meilleur rapport qualité prix').flagged, false);
+
+  // WhatsApp mentions (@...) not confused with phone numbers
+  assert.equal(detectModeration('@129270110248993 @134153320292552 Savez-vous jusqu’à quand on peut créer un nouveau compte ? Concrètement je ne suis pas disponible avant dimanche').flagged, false);
+  assert.equal(detectModeration('@129270110248993 ou peut on aller se changer a l\'hôtel si cela est prévu en journée à partir de Mina').flagged, false);
+});
+

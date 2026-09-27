@@ -208,7 +208,7 @@ export const adminHtml = `<!doctype html>
   </div>
 
   <div id="panel-blacklist" hidden>
-    <p class="muted"><strong>Bannissement multi-groupes :</strong> les numéros listés ici sont définitivement exclus de tous les groupes surveillés. Toute tentative future de rejoindre nos groupes sera automatiquement rejetée sur WhatsApp.</p>
+    <p class="muted"><strong>Bannissement multi-groupes & communautés :</strong> les numéros listés ici sont définitivement exclus de tous les groupes et communautés. Toute tentative future de rejoindre nos groupes ou communautés sera automatiquement rejetée sur WhatsApp.</p>
     <div style="display:flex;gap:8px;max-width:650px;margin-bottom:12px;flex-wrap:wrap">
       <input id="new-ban-phone" type="text" placeholder="Numéro à bannir (ex: +33 6 12 34 56 78 ou 06...)" style="flex:2;min-width:200px">
       <input id="new-ban-reason" type="text" placeholder="Motif du ban (ex: Publicité abusive, arnaque...)" style="flex:2;min-width:180px">

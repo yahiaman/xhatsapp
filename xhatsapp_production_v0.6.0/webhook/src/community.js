@@ -3,6 +3,8 @@
  * Entraide Nusuk Hajj 1447 / 2026
  */
 
+import { readFile } from 'node:fs/promises';
+
 export function normalizeText(text) {
   return String(text || '')
     .normalize('NFD')
@@ -602,8 +604,8 @@ export function buildStatusReport({
 
 export function buildBanSuccessMessage({ phone, reason, kickedGroups = [] }) {
   const kickSummary = kickedGroups.length > 0
-    ? `Expulsé de ${kickedGroups.length} groupe(s) : [${kickedGroups.join(', ')}]`
-    : 'Non présent actuellement dans les groupes surveillés';
+    ? `Expulsé de ${kickedGroups.length} groupe(s) / communauté(s) : [${kickedGroups.join(', ')}]`
+    : 'Non présent actuellement dans les groupes ou communautés';
 
   return [
     '🚫 *MEMBRE BANNI AVEC SUCCÈS*',
@@ -612,7 +614,7 @@ export function buildBanSuccessMessage({ phone, reason, kickedGroups = [] }) {
     `📝 *Raison :* ${reason || 'Non précisée'}`,
     `🚪 *Action immédiate :* ${kickSummary}`,
     '🛡️ *Statut :* Numéro ajouté à la liste noire permanente.',
-    'Toute tentative future de rejoindre nos groupes sera automatiquement rejetée.',
+    'Toute tentative future de rejoindre nos groupes ou communautés sera automatiquement rejetée.',
   ].join('\n');
 }
 
@@ -658,4 +660,273 @@ export function buildBannedAttemptAlert({ phone, senderReference, groupName, isR
   ].join('\n');
 }
 
+export const KNOWN_COMMUNITY_JIDS = new Set([
+  '120363248178474728@g.us',
+  '120363363946703647@g.us',
+  '120363407868814209@g.us',
+  '120363425766194805@g.us',
+  '120363430361743216@g.us',
+]);
 
+export async function kickBannedMemberFromAllGroupsAndCommunitiesCore({
+  openWa,
+  targetDigits,
+  normalizedTarget,
+  getAdminTargetFn,
+  listGroupPoliciesFn,
+  readGroupInventoryFn,
+  inventoryFilePath,
+  knownLidPhoneMap = new Map(),
+  resolveParticipantDetailsFn,
+}) {
+  const kickedFrom = [];
+  const targetPhones = new Set([targetDigits, normalizedTarget].filter(Boolean));
+  if (targetPhones.size === 0) return kickedFrom;
+
+  // 1. Identify admin chat IDs to protect
+  const adminChatIds = new Set();
+  try {
+    if (typeof getAdminTargetFn === 'function') {
+      const adminTarget = await getAdminTargetFn().catch(() => null);
+      if (adminTarget?.chat_id) adminChatIds.add(adminTarget.chat_id);
+      if (adminTarget?.chatId) adminChatIds.add(adminTarget.chatId);
+    }
+  } catch {}
+
+  let allDbGroups = [];
+  try {
+    if (typeof listGroupPoliciesFn === 'function') {
+      allDbGroups = await listGroupPoliciesFn().catch(() => []);
+      for (const g of allDbGroups) {
+        if (g.is_admin || g.isAdmin) {
+          if (g.chat_id) adminChatIds.add(g.chat_id);
+          if (g.chatId) adminChatIds.add(g.chatId);
+        }
+      }
+    }
+  } catch {}
+
+  // 2. Discover all candidate chats (groups + communities)
+  const candidateChats = new Map(); // chatId -> { id, name, isCommunity }
+  const communityParentJids = new Set(KNOWN_COMMUNITY_JIDS);
+
+  // From static inventory file
+  try {
+    let inventoryItems = [];
+    if (inventoryFilePath) {
+      try {
+        const content = await readFile(inventoryFilePath, 'utf8');
+        const parsed = JSON.parse(content);
+        inventoryItems = Array.isArray(parsed) ? parsed : (parsed?.groups || parsed?.data || parsed?.items || []);
+      } catch {
+        if (typeof readGroupInventoryFn === 'function') {
+          inventoryItems = await readGroupInventoryFn(inventoryFilePath).catch(() => []);
+        }
+      }
+    } else if (typeof readGroupInventoryFn === 'function') {
+      inventoryItems = await readGroupInventoryFn().catch(() => []);
+    }
+
+    if (Array.isArray(inventoryItems)) {
+      for (const item of inventoryItems) {
+        if (item.linkedParentJID) {
+          communityParentJids.add(item.linkedParentJID);
+        }
+      }
+      for (const item of inventoryItems) {
+        const id = String(item.id || item.groupId || item.chatId || '').trim();
+        if (id && id.endsWith('@g.us')) {
+          const isCommunity = Boolean(
+            communityParentJids.has(id) ||
+            item.isCommunity ||
+            item.isParentGroup ||
+            item.linkedParentJID === null
+          );
+          candidateChats.set(id, {
+            id,
+            name: String(item.subject || item.name || '(sans nom)').trim(),
+            isCommunity,
+          });
+        }
+      }
+    }
+  } catch {}
+
+  // From DB groups
+  for (const g of allDbGroups) {
+    const cid = g.chat_id || g.chatId;
+    if (cid && cid.endsWith('@g.us')) {
+      const existing = candidateChats.get(cid);
+      const isCommunity = Boolean(existing?.isCommunity || communityParentJids.has(cid));
+      candidateChats.set(cid, {
+        id: cid,
+        name: g.name || existing?.name || '(sans nom)',
+        isCommunity,
+      });
+    }
+  }
+
+  // From OpenWA live list
+  try {
+    if (openWa && typeof openWa.listGroups === 'function') {
+      const liveGroupsData = await openWa.listGroups(500, 0).catch(() => []);
+      const liveGroups = Array.isArray(liveGroupsData)
+        ? liveGroupsData
+        : (liveGroupsData?.groups || liveGroupsData?.data || liveGroupsData?.items || []);
+
+      if (Array.isArray(liveGroups)) {
+        for (const g of liveGroups) {
+          if (g.linkedParentJID) {
+            communityParentJids.add(g.linkedParentJID);
+          }
+        }
+        for (const g of liveGroups) {
+          const cid = String(g.id || g.groupId || g.chatId || '').trim();
+          if (cid && cid.endsWith('@g.us')) {
+            const existing = candidateChats.get(cid);
+            const isCommunity = Boolean(
+              communityParentJids.has(cid) ||
+              g.isCommunity ||
+              g.isParentGroup ||
+              (existing && existing.isCommunity)
+            );
+            candidateChats.set(cid, {
+              id: cid,
+              name: String(g.subject || g.name || existing?.name || '(sans nom)').trim(),
+              isCommunity,
+            });
+          }
+        }
+      }
+    }
+  } catch {}
+
+  // Remove admin chats
+  for (const adminId of adminChatIds) {
+    candidateChats.delete(adminId);
+  }
+
+  // 3. Resolve target LIDs if known
+  const targetLids = new Set();
+  if (knownLidPhoneMap) {
+    for (const [lid, phone] of knownLidPhoneMap.entries()) {
+      if (targetPhones.has(phone)) {
+        targetLids.add(lid);
+        targetLids.add(`${lid}@lid`);
+      }
+    }
+  }
+
+  try {
+    if (openWa && typeof openWa.getContact === 'function' && normalizedTarget) {
+      const contact = await openWa.getContact(`${normalizedTarget}@c.us`).catch(() => null);
+      if (contact?.lid) {
+        const lidDigits = String(contact.lid).split('@')[0].replace(/\D/g, '');
+        targetLids.add(lidDigits);
+        targetLids.add(`${lidDigits}@lid`);
+        if (lidDigits && knownLidPhoneMap) {
+          knownLidPhoneMap.set(lidDigits, normalizedTarget);
+        }
+      }
+    }
+  } catch {}
+
+  // 4. Iterate all candidate chats to kick & reject pending requests
+  for (const [chatId, chat] of candidateChats) {
+    try {
+      if (openWa && typeof openWa.getGroup === 'function') {
+        const groupInfo = await openWa.getGroup(chatId).catch(() => null);
+        if (groupInfo && Array.isArray(groupInfo.participants)) {
+          let matchedParticipantId = null;
+
+          for (const p of groupInfo.participants) {
+            const pId = typeof p === 'string'
+              ? p
+              : (typeof p?.id === 'string' ? p.id : p?.id?._serialized || '');
+            const pNumber = typeof p === 'object' && (p.number || p.phoneNumber)
+              ? String(p.number || p.phoneNumber).replace(/\D/g, '')
+              : '';
+            const pDigits = pId ? pId.split('@')[0].replace(/\D/g, '') : '';
+
+            if (pNumber && targetPhones.has(pNumber)) {
+              matchedParticipantId = pId;
+              break;
+            }
+            if (pDigits && !pId.includes('@lid') && targetPhones.has(pDigits)) {
+              matchedParticipantId = pId;
+              break;
+            }
+            if (pId.includes('@lid')) {
+              if (targetLids.has(pDigits) || targetLids.has(pId)) {
+                matchedParticipantId = pId;
+                break;
+              }
+              if (typeof resolveParticipantDetailsFn === 'function') {
+                const resolved = await resolveParticipantDetailsFn(openWa, pId).catch(() => null);
+                if (resolved?.phone && targetPhones.has(resolved.phone)) {
+                  matchedParticipantId = pId;
+                  targetLids.add(pDigits);
+                  if (knownLidPhoneMap && pDigits) {
+                    knownLidPhoneMap.set(pDigits, resolved.phone);
+                  }
+                  break;
+                }
+              }
+            }
+          }
+
+          if (matchedParticipantId && typeof openWa.removeParticipants === 'function') {
+            try {
+              await openWa.removeParticipants(chatId, [matchedParticipantId]);
+              const label = chat.isCommunity ? `${chat.name} (Communauté)` : chat.name;
+              if (!kickedFrom.includes(label)) {
+                kickedFrom.push(label);
+              }
+            } catch {}
+          }
+        }
+      }
+
+      // Check and reject pending membership requests
+      if (openWa && typeof openWa.getMembershipRequests === 'function' && typeof openWa.rejectMembershipRequests === 'function') {
+        const requests = await openWa.getMembershipRequests(chatId).catch(() => []);
+        const rawRequests = Array.isArray(requests) ? requests : (requests?.requests || requests?.data || []);
+        if (Array.isArray(rawRequests) && rawRequests.length > 0) {
+          const reqsToReject = [];
+          for (const req of rawRequests) {
+            const reqId = typeof req === 'string'
+              ? req
+              : (typeof req?.participantId === 'string'
+                ? req.participantId
+                : (typeof req?.id === 'string' ? req.id : req?.id?._serialized || ''));
+            if (!reqId) continue;
+            const reqDigits = reqId.split('@')[0].replace(/\D/g, '');
+
+            if (!reqId.includes('@lid') && targetPhones.has(reqDigits)) {
+              reqsToReject.push(reqId);
+            } else if (reqId.includes('@lid') && (targetLids.has(reqDigits) || targetLids.has(reqId))) {
+              reqsToReject.push(reqId);
+            } else if (reqId.includes('@lid') && typeof resolveParticipantDetailsFn === 'function') {
+              const resolved = await resolveParticipantDetailsFn(openWa, reqId).catch(() => null);
+              if (resolved?.phone && targetPhones.has(resolved.phone)) {
+                reqsToReject.push(reqId);
+                targetLids.add(reqDigits);
+                if (knownLidPhoneMap && reqDigits) {
+                  knownLidPhoneMap.set(reqDigits, resolved.phone);
+                }
+              }
+            }
+          }
+
+          if (reqsToReject.length > 0) {
+            try {
+              await openWa.rejectMembershipRequests(chatId, reqsToReject);
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+  }
+
+  return kickedFrom;
+}

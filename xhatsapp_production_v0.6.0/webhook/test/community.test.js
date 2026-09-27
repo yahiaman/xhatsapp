@@ -11,6 +11,7 @@ import {
   buildPanicAlert,
   buildUnlockNotice,
   detectPanic,
+  kickBannedMemberFromAllGroupsAndCommunitiesCore,
   parseCommunityCommand,
 } from '../src/community.js';
 
@@ -511,5 +512,115 @@ test('detects resource mentions and builds cards properly', async () => {
   });
   assert.ok(bannedAlert.includes('ALERTE : TENTATIVE D’ACCÈS PAR UN MEMBRE BANNI'));
   assert.ok(bannedAlert.includes('Demande d’adhésion automatiquement rejetée'));
+});
+
+test('expels banned member from all groups and communities, resolves LIDs, rejects pending requests, and preserves admin group', async () => {
+  const removedCalls = [];
+  const rejectedCalls = [];
+
+  const mockOpenWa = {
+    listGroups: async () => [
+      { id: 'group_monitored@g.us', subject: 'Groupe 1 Surveillé', linkedParentJID: 'comm_parent@g.us' },
+      { id: 'comm_announce@g.us', subject: 'Annonces Nusuk Hajj', linkedParentJID: 'comm_parent@g.us' },
+      { id: 'comm_parent@g.us', subject: 'Entraide Nusuk Hajj 2026', linkedParentJID: null },
+      { id: 'admin_group@g.us', subject: 'Groupe Admin', linkedParentJID: null },
+    ],
+    getGroup: async (chatId) => {
+      if (chatId === 'group_monitored@g.us') {
+        return {
+          participants: [
+            { id: '33612345678@c.us', number: '33612345678', isAdmin: false },
+            { id: '33699999999@c.us', number: '33699999999', isAdmin: false },
+          ],
+        };
+      }
+      if (chatId === 'comm_parent@g.us') {
+        return {
+          participants: [
+            { id: '9988776655@lid', isAdmin: false },
+            { id: '1122334455@lid', isAdmin: false },
+          ],
+        };
+      }
+      if (chatId === 'admin_group@g.us') {
+        return {
+          participants: [
+            { id: '33612345678@c.us', number: '33612345678', isAdmin: false },
+          ],
+        };
+      }
+      return { participants: [] };
+    },
+    removeParticipants: async (chatId, participants) => {
+      removedCalls.push({ chatId, participants });
+      return true;
+    },
+    getMembershipRequests: async (chatId) => {
+      if (chatId === 'comm_announce@g.us') {
+        return [
+          { participantId: '33612345678@c.us' },
+          { participantId: '33600000000@c.us' },
+        ];
+      }
+      return [];
+    },
+    rejectMembershipRequests: async (chatId, participants) => {
+      rejectedCalls.push({ chatId, participants });
+      return true;
+    },
+    getContact: async (contactId) => {
+      if (contactId === '33612345678@c.us') {
+        return { id: '33612345678@c.us', lid: '9988776655@lid' };
+      }
+      return null;
+    },
+  };
+
+  const kicked = await kickBannedMemberFromAllGroupsAndCommunitiesCore({
+    openWa: mockOpenWa,
+    targetDigits: '33612345678',
+    normalizedTarget: '33612345678',
+    getAdminTargetFn: async () => ({ chat_id: 'admin_group@g.us' }),
+    listGroupPoliciesFn: async () => [
+      { chat_id: 'admin_group@g.us', is_admin: true, name: 'Groupe Admin' },
+      { chat_id: 'group_monitored@g.us', is_monitored: true, name: 'Groupe 1 Surveillé' },
+    ],
+    readGroupInventoryFn: async () => [],
+    inventoryFilePath: null,
+    knownLidPhoneMap: new Map([['9988776655', '33612345678']]),
+    resolveParticipantDetailsFn: async (_openWa, participantId) => {
+      if (participantId === '9988776655@lid') {
+        return { rawId: participantId, chatId: '33612345678@c.us', phone: '33612345678' };
+      }
+      return { rawId: participantId, chatId: null, phone: null };
+    },
+  });
+
+  // Verify removed from group and community parent
+  assert.equal(removedCalls.length, 2);
+  assert.deepEqual(removedCalls[0], {
+    chatId: 'group_monitored@g.us',
+    participants: ['33612345678@c.us'],
+  });
+  assert.deepEqual(removedCalls[1], {
+    chatId: 'comm_parent@g.us',
+    participants: ['9988776655@lid'],
+  });
+
+  // Verify admin group was NEVER touched
+  const adminTouched = removedCalls.some((c) => c.chatId === 'admin_group@g.us');
+  assert.equal(adminTouched, false);
+
+  // Verify pending membership request in community announcement group was rejected
+  assert.equal(rejectedCalls.length, 1);
+  assert.deepEqual(rejectedCalls[0], {
+    chatId: 'comm_announce@g.us',
+    participants: ['33612345678@c.us'],
+  });
+
+  // Verify return value contains community indicator
+  assert.equal(kicked.length, 2);
+  assert.ok(kicked.includes('Groupe 1 Surveillé'));
+  assert.ok(kicked.includes('Entraide Nusuk Hajj 2026 (Communauté)'));
 });
 

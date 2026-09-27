@@ -47,3 +47,7 @@ Thumbs.db
 *.swp
 *.tar.gz
 *.zip
+
+# Agent tools
+.agent/
+.agents/
