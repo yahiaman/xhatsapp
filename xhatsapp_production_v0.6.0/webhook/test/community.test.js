@@ -4,6 +4,7 @@ import {
   auditDuplicates,
   buildDuplicateAdminAlert,
   buildDuplicateAuditReport,
+  buildDuplicateAuditReportChunks,
   buildDuplicateRefusalDm,
   buildFlashMessage,
   buildLockNotice,
@@ -29,6 +30,9 @@ test('parses community admin commands with case-insensitivity', () => {
   assert.deepEqual(parseCommunityCommand('DOUBLONS'), { type: 'audit_doublons' });
   assert.deepEqual(parseCommunityCommand('audit doublons'), { type: 'audit_doublons' });
   assert.deepEqual(parseCommunityCommand('doublon'), { type: 'audit_doublons' });
+  assert.deepEqual(parseCommunityCommand('!doublons'), { type: 'audit_doublons' });
+  assert.deepEqual(parseCommunityCommand('/doublons'), { type: 'audit_doublons' });
+  assert.deepEqual(parseCommunityCommand('!audit doublons'), { type: 'audit_doublons' });
 
   assert.deepEqual(
     parseCommunityCommand('FLASH Vol Médine retardé de 3 heures'),
@@ -205,6 +209,36 @@ test('audits duplicates across groups while strictly excluding admins', () => {
   assert.equal(emptyAudit.duplicatesCount, 0);
   const cleanReport = buildDuplicateAuditReport(emptyAudit);
   assert.ok(cleanReport.includes('Aucun membre en doublon'));
+
+  const emptyChunks = buildDuplicateAuditReportChunks(emptyAudit);
+  assert.equal(emptyChunks.length, 1);
+  assert.ok(emptyChunks[0].includes('Aucun membre en doublon'));
+
+  const smallChunks = buildDuplicateAuditReportChunks(audit);
+  assert.equal(smallChunks.length, 1);
+  assert.ok(smallChunks[0].includes('AUDIT DES MEMBRES EN DOUBLON'));
+  assert.ok(smallChunks[0].includes('+33611111111'));
+
+  // Test chunking with large number of duplicates
+  const manyDuplicates = Array.from({ length: 100 }, (_, i) => ({
+    id: `u${i}@c.us`,
+    phone: `336000000${String(i).padStart(2, '0')}`,
+    name: `Pèlerin ${i}`,
+    groups: ['Groupe A', 'Groupe B'],
+  }));
+  const largeAudit = {
+    groupsCount: 5,
+    regularPilgrimsCount: 3000,
+    duplicatesCount: 100,
+    duplicates: manyDuplicates,
+  };
+  const largeChunks = buildDuplicateAuditReportChunks(largeAudit, 2000);
+  assert.ok(largeChunks.length > 1);
+  for (const chunk of largeChunks) {
+    assert.ok(chunk.length <= 2000);
+  }
+  assert.ok(largeChunks[0].includes('(1/'));
+  assert.ok(largeChunks[largeChunks.length - 1].includes('Ces membres peuvent être retirés'));
 });
 
 test('normalizes phone numbers and checks exempt moderator status', async () => {

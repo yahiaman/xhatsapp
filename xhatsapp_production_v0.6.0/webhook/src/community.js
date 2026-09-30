@@ -45,7 +45,7 @@ export function parseCommunityCommand(rawText, { hasMedia = false } = {}) {
     return { type: 'unblock_all' };
   }
 
-  if (normalized === 'DOUBLONS' || normalized === 'AUDIT DOUBLONS' || normalized === 'DOUBLON') {
+  if (/^[!/]?(?:AUDIT\s+)?DOUBLONS?[.?!]?$/i.test(trimmed)) {
     return { type: 'audit_doublons' };
   }
 
@@ -424,6 +424,82 @@ export function buildDuplicateAuditReport(audit) {
   lines.push('ℹ️ _Ces membres peuvent être retirés manuellement d’un de leurs groupes si nécessaire pour libérer des places._');
 
   return lines.join('\n');
+}
+
+export function buildDuplicateAuditReportChunks(audit, maxChars = 3500) {
+  if (audit.duplicatesCount === 0) {
+    return [buildDuplicateAuditReport(audit)];
+  }
+
+  const itemLines = audit.duplicates.map((item, index) => {
+    const phoneDisplay = item.phone ? `+${item.phone}` : item.id;
+    const nameDisplay = item.name ? ` (${item.name})` : '';
+    return `${index + 1}. ${phoneDisplay}${nameDisplay} : présent dans ${item.groups.length} groupes [${item.groups.join(', ')}]`;
+  });
+
+  const header = [
+    '📊 *AUDIT DES MEMBRES EN DOUBLON* 📊',
+    '───────────────────────────',
+    `🔍 Groupes analysés : ${audit.groupsCount}`,
+    `👥 Pèlerins distincts : ${audit.regularPilgrimsCount}`,
+    `⚠️ *Membres en doublon : ${audit.duplicatesCount}* (hors administrateurs)`,
+    '',
+    '*Liste des doublons détectés :*',
+  ].join('\n');
+
+  const footer = '\n\nℹ️ _Ces membres peuvent être retirés manuellement d’un de leurs groupes si nécessaire pour libérer des places._';
+
+  const singleReport = `${header}\n${itemLines.join('\n')}${footer}`;
+  if (singleReport.length <= maxChars) {
+    return [singleReport];
+  }
+
+  const lineBatches = [];
+  let currentBatch = [];
+  let currentLen = 0;
+  const approxHeaderLen = 250;
+
+  for (const line of itemLines) {
+    if (currentBatch.length > 0 && currentLen + line.length + 1 + approxHeaderLen > maxChars) {
+      lineBatches.push(currentBatch);
+      currentBatch = [];
+      currentLen = 0;
+    }
+    currentBatch.push(line);
+    currentLen += line.length + 1;
+  }
+  if (currentBatch.length > 0) {
+    lineBatches.push(currentBatch);
+  }
+
+  const totalParts = lineBatches.length;
+  return lineBatches.map((batch, idx) => {
+    const partNum = idx + 1;
+    const isFirst = partNum === 1;
+    const isLast = partNum === totalParts;
+
+    let partHeader;
+    if (isFirst) {
+      partHeader = [
+        `📊 *AUDIT DES MEMBRES EN DOUBLON (${partNum}/${totalParts})* 📊`,
+        '───────────────────────────',
+        `🔍 Groupes analysés : ${audit.groupsCount}`,
+        `👥 Pèlerins distincts : ${audit.regularPilgrimsCount}`,
+        `⚠️ *Membres en doublon : ${audit.duplicatesCount}* (hors administrateurs)`,
+        '',
+        `*Liste des doublons détectés (partie ${partNum}/${totalParts}) :*`,
+      ].join('\n');
+    } else {
+      partHeader = [
+        `📊 *AUDIT DES DOUBLONS (suite ${partNum}/${totalParts})* 📊`,
+        '───────────────────────────',
+      ].join('\n');
+    }
+
+    const partBody = batch.join('\n');
+    const partFooter = isLast ? footer : '';
+    return `${partHeader}\n${partBody}${partFooter}`;
+  });
 }
 
 export function buildModeratorsListMessage(moderatorsList = []) {

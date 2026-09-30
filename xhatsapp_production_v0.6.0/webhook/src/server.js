@@ -111,6 +111,7 @@ import {
   buildBannedListMessage,
   buildDuplicateAdminAlert,
   buildDuplicateAuditReport,
+  buildDuplicateAuditReportChunks,
   buildDuplicateRefusalDm,
   buildFlashMessage,
   buildLockNotice,
@@ -233,6 +234,7 @@ async function getCachedModerationExamples() {
 }
 
 let exemptModeratorsCache = [];
+let isAuditDuplicatesRunning = false;
 
 async function reloadExemptModerators() {
   try {
@@ -853,35 +855,84 @@ async function handleCommunityCommand(message, command) {
   }
 
   if (command.type === 'audit_doublons') {
+    if (isAuditDuplicatesRunning) {
+      await openWa.sendText(
+        message.chatId,
+        '⏳ Un audit des doublons est déjà en cours. Veuillez patienter...',
+      ).catch(() => {});
+      return { handled: true, status: 'audit_already_running' };
+    }
+
     const allGroups = await listGroupPolicies();
     const monitoredGroups = allGroups.filter(
       (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
     );
+
     await openWa.sendText(
       message.chatId,
-      `🔍 Audit des membres en cours sur ${monitoredGroups.length} groupe(s)...`,
-    ).catch(() => {});
+      `🔍 Audit des membres en cours sur ${monitoredGroups.length} groupe(s)... Cela peut prendre environ une minute.`,
+    ).catch((err) => {
+      console.error('Failed to send audit start notice', { error: safeOperationalError(err) });
+    });
 
-    const groupsWithParticipants = [];
-    for (const group of monitoredGroups) {
-      const chatId = group.chat_id || group.chatId;
-      if (!chatId) continue;
+    isAuditDuplicatesRunning = true;
+    setImmediate(async () => {
       try {
-        const groupInfo = await openWa.getGroup(chatId);
-        groupsWithParticipants.push({
-          id: chatId,
-          name: group.name || group.inventory_ref || chatId,
-          participants: groupInfo?.participants || [],
-        });
-      } catch (error) {
-        console.error('Failed to retrieve group participants for audit', { group: group.name, error: safeOperationalError(error) });
-      }
-    }
+        console.log('Starting duplicate audit in background...', { groupsCount: monitoredGroups.length });
+        const groupsWithParticipants = [];
+        for (const group of monitoredGroups) {
+          const chatId = group.chat_id || group.chatId;
+          if (!chatId) continue;
+          try {
+            const groupInfo = await openWa.getGroup(chatId);
+            groupsWithParticipants.push({
+              id: chatId,
+              name: group.name || group.inventory_ref || chatId,
+              participants: groupInfo?.participants || [],
+            });
+          } catch (error) {
+            console.error('Failed to retrieve group participants for audit', {
+              group: group.name,
+              error: safeOperationalError(error),
+            });
+          }
+        }
 
-    const audit = auditDuplicates(groupsWithParticipants, exemptModeratorsCache);
-    const report = buildDuplicateAuditReport(audit);
-    await openWa.sendText(message.chatId, report).catch(() => {});
-    return { handled: true, status: 'audit_completed' };
+        const exemptList = await listExemptModerators().catch(() => exemptModeratorsCache);
+        const audit = auditDuplicates(groupsWithParticipants, exemptList);
+        console.log('Duplicate audit completed', {
+          groupsCount: audit.groupsCount,
+          totalPresences: audit.totalPresences,
+          regularPilgrimsCount: audit.regularPilgrimsCount,
+          duplicatesCount: audit.duplicatesCount,
+        });
+
+        const chunks = buildDuplicateAuditReportChunks(audit);
+        for (let i = 0; i < chunks.length; i++) {
+          try {
+            await openWa.sendText(message.chatId, chunks[i]);
+            console.log(`Duplicate audit chunk ${i + 1}/${chunks.length} sent successfully`);
+          } catch (err) {
+            console.error(`Failed to send duplicate audit chunk ${i + 1}/${chunks.length}`, {
+              error: safeOperationalError(err),
+            });
+          }
+          if (i < chunks.length - 1) {
+            await new Promise((resolve) => setTimeout(resolve, 600));
+          }
+        }
+      } catch (err) {
+        console.error('Background duplicate audit failed', { error: safeOperationalError(err) });
+        await openWa.sendText(
+          message.chatId,
+          '❌ Une erreur est survenue lors de la réalisation de l’audit des doublons.',
+        ).catch(() => {});
+      } finally {
+        isAuditDuplicatesRunning = false;
+      }
+    });
+
+    return { handled: true, status: 'audit_started' };
   }
 
   if (command.type === 'status') {
