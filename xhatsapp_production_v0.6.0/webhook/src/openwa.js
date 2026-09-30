@@ -173,5 +173,19 @@ export function createOpenWaClient({ baseUrl, sessionId, apiKey, timeoutMs = 30_
     getMe() {
       return request('get_me', 'GET', '/me');
     },
+    listWebhooks() {
+      return request('list_webhooks', 'GET', '/webhooks');
+    },
+    updateWebhook(webhookId, settings) {
+      return request(
+        'update_webhook',
+        'PUT',
+        `/webhooks/${encodeURIComponent(webhookId)}`,
+        settings,
+      );
+    },
+    createWebhook(payload) {
+      return request('create_webhook', 'POST', '/webhooks', payload);
+    },
   };
 }

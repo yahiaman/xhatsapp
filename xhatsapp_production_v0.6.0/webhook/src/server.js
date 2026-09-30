@@ -2699,6 +2699,99 @@ setTimeout(() => void recapTick(), 15_000).unref();
 const recapTimer = setInterval(() => void recapTick(), 60_000);
 recapTimer.unref();
 
+async function ensureOpenWaWebhook() {
+  try {
+    const webhooks = await openWa.listWebhooks();
+    const requiredEvents = ['message.received', 'group.join', 'group.join_request'];
+    for (const hook of webhooks) {
+      if (!hook.url || !hook.url.includes('/webhook/openwa')) continue;
+      const currentEvents = Array.isArray(hook.events) ? hook.events : [];
+      const missingEvents = requiredEvents.filter((ev) => !currentEvents.includes(ev));
+      if (missingEvents.length > 0) {
+        console.warn('OpenWA webhook is missing events, self-healing...', {
+          webhookId: hook.id,
+          currentEvents,
+          missingEvents,
+        });
+        const mergedEvents = [...new Set([...currentEvents, ...requiredEvents])];
+        await openWa.updateWebhook(hook.id, {
+          url: hook.url,
+          events: mergedEvents,
+          active: true,
+          retryCount: hook.retryCount ?? 3,
+        });
+        console.log('OpenWA webhook successfully updated with missing events', {
+          webhookId: hook.id,
+          events: mergedEvents,
+        });
+      } else {
+        console.log('OpenWA webhook verified: all required events registered', {
+          webhookId: hook.id,
+          events: currentEvents,
+        });
+      }
+    }
+  } catch (error) {
+    console.warn('Failed to verify OpenWA webhooks', {
+      error: safeOperationalError(error),
+    });
+  }
+}
+
+let reconcileRequestsRunning = false;
+async function reconcileMembershipRequests() {
+  if (reconcileRequestsRunning) return;
+  reconcileRequestsRunning = true;
+  try {
+    const allGroups = await listGroupPolicies().catch(() => []);
+    const monitoredGroups = allGroups.filter(
+      (g) => (g.enabled ?? false) && (g.is_monitored || g.isMonitored) && !(g.is_admin || g.isAdmin),
+    );
+
+    for (const group of monitoredGroups) {
+      const chatId = group.chat_id || group.chatId;
+      if (!chatId) continue;
+      try {
+        const requests = await openWa.getMembershipRequests(chatId).catch(() => []);
+        if (Array.isArray(requests) && requests.length > 0) {
+          const participantIds = requests
+            .map((r) => (typeof r === 'string' ? r : (r?.id || r?.phoneNumber || r?.number || '')))
+            .filter(Boolean);
+          if (participantIds.length > 0) {
+            console.log('Periodic reconciliation found pending membership requests', {
+              group: group.name,
+              count: participantIds.length,
+            });
+            await handleGroupJoinRequestEvent({
+              groupId: chatId,
+              participantIds,
+            });
+          }
+        }
+      } catch (groupErr) {
+        console.warn('Failed to reconcile membership requests for group', {
+          group: group.name,
+          error: safeOperationalError(groupErr),
+        });
+      }
+    }
+  } catch (error) {
+    console.error('Membership requests reconciliation tick failed', {
+      error: safeOperationalError(error),
+    });
+  } finally {
+    reconcileRequestsRunning = false;
+  }
+}
+
+setTimeout(() => void ensureOpenWaWebhook(), 3_000).unref();
+const webhookVerifyTimer = setInterval(() => void ensureOpenWaWebhook(), 30 * 60_000);
+webhookVerifyTimer.unref();
+
+setTimeout(() => void reconcileMembershipRequests(), 10_000).unref();
+const reconcileTimer = setInterval(() => void reconcileMembershipRequests(), 120_000);
+reconcileTimer.unref();
+
 try {
   const resumable = await listResumableBroadcastIds();
   if (resumable.length > 0) {
@@ -2720,6 +2813,8 @@ async function shutdown(signal) {
   console.log('Webhook shutting down', { signal });
   clearInterval(scheduleTimer);
   clearInterval(recapTimer);
+  clearInterval(webhookVerifyTimer);
+  clearInterval(reconcileTimer);
   server.close(async () => {
     await pool.end();
     process.exit(0);

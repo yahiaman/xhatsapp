@@ -238,5 +238,38 @@ test('downloads stored media as a buffer with mime type', async (context) => {
   assert.equal(media.base64, Buffer.from('binary-image-content').toString('base64'));
 });
 
+test('lists webhooks and updates webhook configuration with encoded id', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url, options });
+    if (options?.method === 'PUT') {
+      return new Response(JSON.stringify({ success: true }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    }
+    return new Response(JSON.stringify([{ id: 'wh-1', events: ['message.received'] }]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  const client = createOpenWaClient({ baseUrl: 'http://openwa:2785', sessionId: 'sess', apiKey: 'key' });
+  const list = await client.listWebhooks();
+  assert.equal(calls[0].url, 'http://openwa:2785/api/sessions/sess/webhooks');
+  assert.equal(calls[0].options.method, 'GET');
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, 'wh-1');
 
-
+  await client.updateWebhook('wh-1', {
+    url: 'https://example.com/webhook',
+    events: ['message.received', 'group.join', 'group.join_request'],
+  });
+  assert.equal(calls[1].url, 'http://openwa:2785/api/sessions/sess/webhooks/wh-1');
+  assert.equal(calls[1].options.method, 'PUT');
+  assert.deepEqual(JSON.parse(calls[1].options.body), {
+    url: 'https://example.com/webhook',
+    events: ['message.received', 'group.join', 'group.join_request'],
+  });
+});
