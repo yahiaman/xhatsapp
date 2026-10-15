@@ -90,8 +90,21 @@ export function buildRecapPreview({ code, localDate, deliveries }) {
   ].join('\n');
 }
 
+const DEFAULT_OMNIROUTE_FALLBACK_MODELS = [
+  'auto/best-chat',
+  'kiro/claude-sonnet-4.5',
+  'antigravity/gemini-3.1-flash-lite',
+  'antigravity/claude-sonnet-4-6',
+  'kiro/claude-haiku-4.5',
+];
+
 export function createSummaryClient({
-  provider = 'omniroute', baseUrl, apiKey = '', model, timeoutMs = 15 * 60_000,
+  provider = 'omniroute',
+  baseUrl,
+  apiKey = '',
+  model,
+  fallbackModels = DEFAULT_OMNIROUTE_FALLBACK_MODELS,
+  timeoutMs = 15 * 60_000,
 }) {
   const root = String(baseUrl).replace(/\/+$/, '');
   async function generate(prompt, numPredict, systemOverride = null) {
@@ -110,32 +123,51 @@ export function createSummaryClient({
     if (!['omniroute', 'ollama'].includes(provider)) throw new Error('summary_provider_invalid');
     if (!model || model === 'pending') throw new Error('summary_model_not_configured');
     if (!isOllama && (!apiKey || apiKey === 'pending')) throw new Error('summary_api_key_not_configured');
-    const response = await fetch(isOllama ? `${root}/api/generate` : `${root}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(isOllama ? {} : {
-          Authorization: `Bearer ${apiKey}`,
-          'X-OmniRoute-No-Cache': 'true',
-        }),
-      },
-      body: JSON.stringify(isOllama ? {
-        model, system, prompt, stream: false, think: false, keep_alive: 0,
-        options: { num_ctx: 8192, num_predict: numPredict, temperature: 0.2, top_p: 0.9 },
-      } : {
-        model,
-        messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
-        stream: false,
-        max_tokens: numPredict,
-        temperature: 0.2,
-        top_p: 0.9,
-      }),
-      signal: AbortSignal.timeout(timeoutMs),
-    });
-    const payload = await response.json().catch(() => ({}));
-    const output = isOllama ? payload.response : payload?.choices?.[0]?.message?.content;
-    if (!response.ok || typeof output !== 'string') throw new Error(`summary_http_${response.status}`);
-    return output.trim();
+
+    const primaryModels = String(model)
+      .split(',')
+      .map((m) => m.trim())
+      .filter(Boolean);
+    const candidates = isOllama
+      ? [primaryModels[0]]
+      : [...new Set([...primaryModels, ...(Array.isArray(fallbackModels) ? fallbackModels : [])])];
+
+    let lastError = null;
+    for (const candidateModel of candidates) {
+      try {
+        const response = await fetch(isOllama ? `${root}/api/generate` : `${root}/chat/completions`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            ...(isOllama ? {} : {
+              Authorization: `Bearer ${apiKey}`,
+              'X-OmniRoute-No-Cache': 'true',
+            }),
+          },
+          body: JSON.stringify(isOllama ? {
+            model: candidateModel, system, prompt, stream: false, think: false, keep_alive: 0,
+            options: { num_ctx: 8192, num_predict: numPredict, temperature: 0.2, top_p: 0.9 },
+          } : {
+            model: candidateModel,
+            messages: [{ role: 'system', content: system }, { role: 'user', content: prompt }],
+            stream: false,
+            max_tokens: numPredict,
+            temperature: 0.2,
+            top_p: 0.9,
+          }),
+          signal: AbortSignal.timeout(timeoutMs),
+        });
+        const payload = await response.json().catch(() => ({}));
+        const output = isOllama ? payload.response : payload?.choices?.[0]?.message?.content;
+        if (response.ok && typeof output === 'string' && output.trim()) {
+          return output.trim();
+        }
+        lastError = new Error(`summary_http_${response.status}`);
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error('summary_fetch_failed');
+      }
+    }
+    throw lastError || new Error('summary_http_500');
   }
   return { generate };
 }

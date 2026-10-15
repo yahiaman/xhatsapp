@@ -43,6 +43,33 @@ test('refuses an unconfigured OmniRoute endpoint', async () => {
   await assert.rejects(() => client.generate('Contenu', 100), /summary_model_not_configured/);
 });
 
+test('falls back to backup models when primary model returns 429', async () => {
+  const originalFetch = globalThis.fetch;
+  const triedModels = [];
+  globalThis.fetch = async (_url, options) => {
+    const body = JSON.parse(options.body);
+    triedModels.push(body.model);
+    if (body.model === 'broken/model') {
+      return new Response(JSON.stringify({ error: 'rate_limited' }), { status: 429 });
+    }
+    return new Response(JSON.stringify({ choices: [{ message: { content: 'Résumé secours' } }] }), {
+      status: 200, headers: { 'Content-Type': 'application/json' },
+    });
+  };
+  try {
+    const client = createSummaryClient({
+      provider: 'omniroute', baseUrl: 'http://omniroute:20128/v1',
+      apiKey: 'test-key-never-logged', model: 'broken/model',
+      fallbackModels: ['backup/model'],
+      timeoutMs: 1_000,
+    });
+    assert.equal(await client.generate('Contenu', 250), 'Résumé secours');
+    assert.deepEqual(triedModels, ['broken/model', 'backup/model']);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('computes Paris date and due state', () => {
   const before = new Date('2026-09-02T18:09:00Z');
   const after = new Date('2026-09-02T18:10:00Z');

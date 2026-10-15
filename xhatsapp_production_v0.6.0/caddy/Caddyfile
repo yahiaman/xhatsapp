@@ -25,7 +25,7 @@
 
 
 	handle {
-		respond "Not Found" 404
+		reverse_proxy portainer:9000
 	}
 
 	log {

@@ -1076,9 +1076,15 @@ export async function claimDailyRecap({ code, localDate }) {
      ON CONFLICT (local_date) DO UPDATE SET
        status = 'generating', attempts = recap_drafts.attempts + 1,
        last_error = NULL, updated_at = now(), completed_at = NULL
-     WHERE recap_drafts.status = 'failed'
-       AND recap_drafts.attempts < 3
+     WHERE (
+       recap_drafts.status = 'failed'
+       AND recap_drafts.attempts < 5
        AND recap_drafts.updated_at < now() - interval '5 minutes'
+     ) OR (
+       recap_drafts.status = 'generating'
+       AND recap_drafts.attempts < 5
+       AND recap_drafts.updated_at < now() - interval '15 minutes'
+     )
      RETURNING id, code, local_date, attempts`,
     [code, localDate],
   );
