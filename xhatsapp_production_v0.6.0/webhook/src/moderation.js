@@ -25,7 +25,7 @@ export const DEFAULT_FORBIDDEN_AGENCIES = [
   'ACMUV', 'Al Amana', 'Al Bouraq', 'Al Fadjri', 'Al Minbar', 'Al Mourafiq', 'Al Qafila',
   'Al Raad Tour', 'Al Sirate Voyages', 'Al Wafa', 'Arafat Voyages', 'Ariane Voyages',
   'Asfar Travel France', 'Assafar Voyages', 'Association Nour', 'Autre Voyage',
-  'Autre Voyage Falah Darain', 'Azmi', 'Bel Agir', 'Booking Makkah', 'Carnot Voyages',
+  'Autre Voyage Falah Darain', 'Bel Agir', 'Booking Makkah', 'Carnot Voyages',
   'Chayma Travel', 'Institut Fatima', 'CIDRA', 'Classy Travel', 'Dar Hajj', 'DGP', 'Djamila Voyage',
   'El Hayat', 'El Rajhi', 'Essakina Voyage', 'Favela', 'Go Makkah', 'Groupe Al Quds',
   'Hajj Oumra TV', 'Haramain Voyages', 'Haramein Voyages', 'Haramayn Voyages',
@@ -119,6 +119,10 @@ export function buildAgencyRegex(agencyName) {
 }
 
 export function isAgencyFalsePositive(text, normalizedAgency) {
+  if (normalizedAgency === 'azmi' || normalizedAgency === 'abdel azmi') {
+    return true;
+  }
+
   if (normalizedAgency === 'mon hajj') {
     const isExplicitAgency = /(?:l\s+agence|agence|voyages?|travel|tours?|prestataire|chez|formule|forfait|pack|offre|plateforme|site|passez\s+par|passer\s+par|recommande|recommandez|conseille|conseillez|choisir|choisissez)\s+mon\s+hajjs?\b/i.test(text)
       || /\bmon\s+hajjs?\s+(?:voyages?|travel|tours?|organisation|services?)\b/i.test(text);
@@ -227,7 +231,7 @@ export function detectModeration(value, customAgencies = [], customKeywords = {}
   for (const agency of allAgencies) {
     const normalized = normalizeForModeration(agency);
     if (!normalized) continue;
-    if (normalized === 'nusuk' || normalized === 'entraide nusuk hajj' || normalized === 'sans agence' || normalized === 'ithraa al khair') continue;
+    if (normalized === 'nusuk' || normalized === 'entraide nusuk hajj' || normalized === 'sans agence' || normalized === 'ithraa al khair' || normalized === 'azmi' || normalized === 'abdel azmi') continue;
     if (isAgencyFalsePositive(text, normalized)) continue;
     if (containsAgency(text, agency)) {
       matchedAgencies.push(agency);

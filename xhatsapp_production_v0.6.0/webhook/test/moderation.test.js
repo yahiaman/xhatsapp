@@ -96,6 +96,22 @@ test('respects exceptions for Saudi platforms and community terms', () => {
   assert.equal(detectModeration('Ithraa Al Khair est le provider saoudien officiel').flagged, false);
   assert.equal(detectModeration('J arrive dans 10 mn inchaAllah').flagged, false);
 
+  // Partner Azmi / Abdel Azmi must NOT be flagged even if in DB cache
+  assert.equal(detectModeration('Un Big salam aux admins je vous oublie pas et je vous oublierai jamais qu’Allah vous récompenses tous, Abdel Azmi @134153320292552 amin Ibrahim').flagged, false);
+  assert.equal(detectModeration('Azmi est notre partenaire officiel').flagged, false);
+  assert.equal(detectModeration('Abdel Azmi est notre partenaire', ['Azmi']).flagged, false);
+  assert.equal(detectModeration('Contactez Azmi pour assistance', ['Azmi']).flagged, false);
+
+  const taxiNsmMessage = `Salam alaykom les frères et sœurs du groupe. Qu’Allah vous facilite a tous pour cette année et qu’il fasse de vous ces invités pour le prochain Hajj. 
+Un Big salam aux admins je vous oublie pas et je vous oublierai jamais qu’Allah vous récompenses tous, Abdel Azmi @134153320292552 amin Ibrahim, @245835354894356  @129270110248993 @242450920685584 et à tous les autres que j’oublie et aussi les frères et sœurs qui travaillent dans l’ombre. J’oublierai jamais l’expérience de l’année dernière et c’était un plaisir de m’être fait accompagner par vous avant, et pédant ce Hajj 2026 Hayyakum Allah qu’Allah vous donne tout ce que vous voulez et qu’il mette la barak dans votre vie et dans celle de vos proches. 
+
+Cette année c’est différent je viens pour inscrire mes parents et qu’Allah leur facilite et les acceptes pour le prochain Hajj Inch’Allah. 
+
+J’ai commencé à créer leur compte cette après-midi mais j’ai l’impression que tout a changer. Je compte leur créer un compte commun, comment je dois faire ? Je crée d’abord un  compte admin au nom de mon père et ensuite je rajoute ma mère ? Ou je fais un compte directement pour les deux ? 
+Barak Allah oufikoum.`;
+  assert.equal(detectModeration(taxiNsmMessage).flagged, false);
+  assert.equal(detectModeration(taxiNsmMessage, ['Azmi']).flagged, false);
+
   // But France Nusuk must be flagged
   const franceNusuk = detectModeration('Je suis passe par France Nusuk pour mon depart');
   assert.equal(franceNusuk.flagged, true);
